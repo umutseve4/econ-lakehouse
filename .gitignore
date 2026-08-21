@@ -5,3 +5,4 @@ target/
 dbt_packages/
 logs/
 .venv/
+.streamlit/secrets.toml
