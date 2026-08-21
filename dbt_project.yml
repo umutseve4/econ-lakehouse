@@ -4,6 +4,7 @@ profile: econ_lakehouse
 
 model-paths: ["models"]
 test-paths: ["tests/dbt"]
+snapshot-paths: ["snapshots"]
 
 models:
   econ_lakehouse:
