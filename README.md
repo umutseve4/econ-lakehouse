@@ -75,16 +75,23 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 - **Dockerized:** single-entrypoint `orchestrate.py`; image built and run
   end-to-end in CI (`docker-smoke` job); scheduled-run failures auto-open a
   GitHub issue.
-- **Not yet built:** late-revision snapshot tests, Airflow/Dagster-style DAG
-  orchestration, remote storage (S3/minio). Tracked as milestones below.
+- **Remote storage:** bronze lake runs unchanged on S3-compatible object
+  storage via an fsspec URI (`--out s3://bucket/prefix`,
+  `LAKE_S3_ENDPOINT` for MinIO); verified end-to-end in CI against a real
+  MinIO container (`remote-storage` job).
+- **Late-revision history:** dbt snapshot (SCD Type 2, check strategy on
+  `index_value`) captures TCMB revisions as closed/open versions; a CI test
+  proves a revised value produces exactly one closed and one current version.
+- **Not yet built:** Airflow/Dagster-style DAG orchestration, dashboards.
 
 ## Milestones
 
 1. **M1 — vertical slice (done, CI-green):** fixture CSV → bronze → silver → gold, all gated.
 2. **M2 — real data (done, CI-green):** EVDS 3 API ingest, live fetch verified in CI.
-3. **M3 — incremental (done, CI-green):** provenance columns + idempotent upsert; next: snapshot tests for late revisions.
+3. **M3 — incremental (done, CI-green):** provenance columns + idempotent upsert.
 4. **M4 — orchestration (done, CI-green):** Docker image + `orchestrate.py` entrypoint, weekly scheduled runs, auto-issue on scheduled failure.
-5. **M5 — durability:** remote object storage for bronze (S3-compatible), late-revision snapshot tests.
+5. **M5 — durability (done, CI-green):** S3-compatible remote storage for bronze (fsspec + MinIO in CI), dbt snapshot for late revisions with an end-to-end revision test.
+6. **M6 — serving:** analytics-ready serving layer (dashboard or API) on top of the gold mart.
 
 ## License
 

@@ -20,6 +20,11 @@ from pathlib import Path
 
 import pandas as pd
 
+try:  # imported as a package (tests) or run as a script (CLI)
+    from ingest.storage import Storage
+except ImportError:  # pragma: no cover
+    from storage import Storage
+
 REQUIRED_COLUMNS = {
     "date": "datetime64[ns]",
     "item_code": "object",
@@ -79,28 +84,29 @@ def add_provenance(
     return df
 
 
-def write_bronze(df: pd.DataFrame, out_dir: Path) -> list[Path]:
+def write_bronze(df: pd.DataFrame, out_dir: Path | str) -> list[Path | str]:
     """Idempotent, partitioned upsert into the bronze lake.
 
-    For each year partition: if a Parquet file already exists, merge the
-    incoming rows with the existing ones. On key collision (date, item_code)
-    the INCOMING row wins (latest fetch is the truth). Re-running the same
-    ingest therefore changes nothing but the fetched_at stamp.
+    `out_dir` is a local path (default) or a storage URI such as
+    s3://bucket/prefix — see ingest/storage.py. For each year partition:
+    if a Parquet file already exists, merge the incoming rows with the
+    existing ones. On key collision (date, item_code) the INCOMING row wins
+    (latest fetch is the truth). Re-running the same ingest therefore
+    changes nothing but the fetched_at stamp.
     """
     for col in PROVENANCE_COLUMNS:
         if col not in df.columns:
             raise ValidationError(
-                f"provenance column '{col}' missing - call add_provenance() first"
+                f"provenance column '{col}' missing — call add_provenance() first"
             )
 
-    written: list[Path] = []
+    store = Storage.from_uri(out_dir)
+    written: list[Path | str] = []
     for year, part in df.groupby(df["date"].dt.year):
-        target = out_dir / "cpi" / f"year={year}"
-        target.mkdir(parents=True, exist_ok=True)
-        path = target / "data.parquet"
+        path = store.join("cpi", f"year={year}", "data.parquet")
 
-        if path.exists():
-            existing = pd.read_parquet(path)
+        if store.exists(path):
+            existing = store.read_parquet(path)
             existing["date"] = pd.to_datetime(existing["date"])
             merged = pd.concat([existing, part], ignore_index=True)
             merged = merged.drop_duplicates(subset=UPSERT_KEY, keep="last")
@@ -108,21 +114,26 @@ def write_bronze(df: pd.DataFrame, out_dir: Path) -> list[Path]:
             merged = part
 
         merged = merged.sort_values(UPSERT_KEY).reset_index(drop=True)
-        merged.to_parquet(path, index=False)
-        written.append(path)
+        store.write_parquet(merged, path)
+        written.append(Path(path) if store.is_local else path)
     return written
 
 
-def count_bronze_rows(out_dir: Path) -> int:
+def count_bronze_rows(out_dir: Path | str) -> int:
     """Total rows currently in the bronze lake (for idempotency proofs)."""
-    files = sorted(out_dir.glob("cpi/year=*/data.parquet"))
-    return sum(len(pd.read_parquet(f)) for f in files)
+    store = Storage.from_uri(out_dir)
+    files = store.glob("cpi/year=*/data.parquet")
+    return sum(len(store.read_parquet(f)) for f in files)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
-    parser.add_argument("--out", default="warehouse/bronze")
+    parser.add_argument(
+        "--out",
+        default="warehouse/bronze",
+        help="Local dir or storage URI (e.g. s3://bucket/prefix)",
+    )
     parser.add_argument(
         "--source-name",
         default=None,
@@ -140,14 +151,14 @@ def main() -> int:
         checks.append(("validate_contract", "PASS"))
         df = add_provenance(df, source_name)
         checks.append(("add_provenance", f"PASS (source_name={source_name})"))
-        written = write_bronze(df, Path(args.out))
-        total = count_bronze_rows(Path(args.out))
+        written = write_bronze(df, args.out)
+        total = count_bronze_rows(args.out)
         checks.append(
             ("write_partitions", f"PASS ({len(written)} partitions, {total} rows total)")
         )
         status = 0
     except (ValidationError, FileNotFoundError, ValueError) as exc:
-        checks.append(("pipeline", f"FAIL - {exc}"))
+        checks.append(("pipeline", f"FAIL — {exc}"))
         status = 1
 
     print("===== OTOMATIK KONTROL =====")

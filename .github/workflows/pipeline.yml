@@ -27,6 +27,9 @@ jobs:
       - name: Unit tests (EVDS client, offline)
         run: python tests/test_evds_client.py
 
+      - name: Unit tests (storage abstraction)
+        run: python tests/test_storage.py
+
       - name: Fetch real CPI from EVDS (only when secret configured)
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
@@ -84,6 +87,40 @@ jobs:
           assert n > 0
           EOF
 
+      - name: Snapshot test (late-revision history, SCD Type 2)
+        env:
+          DBT_PROFILES_DIR: .
+        run: python tests/test_snapshot_revision.py
+
+  remote-storage:
+    # Proves the bronze lake runs unchanged on S3-compatible object storage.
+    # MinIO is throwaway (lives only for this job), so hardcoded creds here
+    # are ephemeral test fixtures, not secrets.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Start MinIO (S3-compatible object storage)
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=lakeadmin \
+            -e MINIO_ROOT_PASSWORD=lakesecret123 \
+            quay.io/minio/minio server /data
+
+      - name: Remote storage end-to-end test
+        env:
+          LAKE_S3_ENDPOINT: http://localhost:9000
+          AWS_ACCESS_KEY_ID: lakeadmin
+          AWS_SECRET_ACCESS_KEY: lakesecret123
+        run: python tests/test_remote_storage.py
+
   docker-smoke:
     runs-on: ubuntu-latest
     steps:
@@ -112,7 +149,7 @@ jobs:
     # Opens a GitHub issue when a scheduled run fails, so silent breakage
     # (e.g. an upstream EVDS API change) surfaces without anyone watching CI.
     runs-on: ubuntu-latest
-    needs: [ingest-and-transform, docker-smoke]
+    needs: [ingest-and-transform, docker-smoke, remote-storage]
     if: failure() && github.event_name == 'schedule'
     permissions:
       issues: write
