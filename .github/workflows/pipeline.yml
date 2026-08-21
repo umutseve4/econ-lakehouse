@@ -92,6 +92,32 @@ jobs:
           DBT_PROFILES_DIR: .
         run: python tests/test_snapshot_revision.py
 
+      - name: Unit tests (serving API, fixture warehouse)
+        run: python tests/test_api.py
+
+      - name: Serving API smoke against real warehouse
+        run: |
+          uvicorn serve.app:app --port 8000 &
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:8000/health > /dev/null && break
+            sleep 1
+          done
+          HEALTH=$(curl -sf http://localhost:8000/health)
+          ROWS=$(curl -sf 'http://localhost:8000/v1/inflation?limit=3')
+          LATEST=$(curl -sf 'http://localhost:8000/v1/inflation/latest')
+          echo "health: $HEALTH"
+          echo "sample: $ROWS"
+          echo "===== OTOMATIK KONTROL ====="
+          GOLD=$(echo "$HEALTH" | python -c "import sys,json;print(json.load(sys.stdin)['gold_rows'])")
+          NLATEST=$(echo "$LATEST" | python -c "import sys,json;print(len(json.load(sys.stdin)))")
+          echo "gold_rows_via_api: $GOLD"
+          echo "latest_items: $NLATEST"
+          if [ "$GOLD" -gt 0 ] && [ "$NLATEST" -gt 0 ]; then
+            echo "RESULT: PASS"
+          else
+            echo "RESULT: FAIL"; exit 1
+          fi
+
   remote-storage:
     # Proves the bronze lake runs unchanged on S3-compatible object storage.
     # MinIO is throwaway (lives only for this job), so hardcoded creds here
