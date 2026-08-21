@@ -26,7 +26,7 @@ FIXTURE = {
 
 def test_build_url() -> None:
     url = build_url("TP.FG.J0", "01-01-2020", "01-08-2026")
-    assert url.startswith("https://evds2.tcmb.gov.tr/service/evds/series=TP.FG.J0")
+    assert url.startswith("https://evds3.tcmb.gov.tr/service/evds/series=TP.FG.J0")
     assert "startDate=01-01-2020" in url and "endDate=01-08-2026" in url
     assert "type=json" in url
     assert "key=" not in url, "API key must travel in the header, never the URL"

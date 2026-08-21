@@ -1,4 +1,4 @@
-"""One-shot EVDS request diagnostics.
+"""One-shot EVDS request diagnostics (now probing evds3).
 
 Runs several request variants against EVDS and prints, for each:
 status, redirect target (if any), content-type, and body head.
@@ -14,7 +14,7 @@ import sys
 import urllib.error
 import urllib.request
 
-BASE = "https://evds2.tcmb.gov.tr/service/evds/"
+BASE = "https://evds3.tcmb.gov.tr/service/evds/"
 QUERY = (
     "series=TP.FG.J0&startDate=01-01-2024&endDate=01-06-2024"
     "&type=json&frequency=5&aggregationTypes=avg&formulas=0"

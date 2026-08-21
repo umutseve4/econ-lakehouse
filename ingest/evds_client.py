@@ -23,7 +23,10 @@ from pathlib import Path
 
 import pandas as pd
 
-BASE_URL = "https://evds2.tcmb.gov.tr/service/evds/"
+# TCMB migrated EVDS from evds2 to evds3; evds2 302-redirects every request
+# (including API paths) to the evds3 SPA homepage, returning HTML instead of
+# JSON. Verified by CI diagnostic matrix on 2026-08-21 (PR #3, run #8).
+BASE_URL = "https://evds3.tcmb.gov.tr/service/evds/"
 
 # EVDS series -> human-readable item metadata (bronze contract fields)
 SERIES_META = {
@@ -85,7 +88,6 @@ def fetch(series: str, start_ym: str, api_key: str) -> pd.DataFrame:
 
     headers = {
         "key": api_key,
-        # EVDS'in WAF'ı varsayılan urllib User-Agent'ını engelleyebiliyor.
         "User-Agent": "Mozilla/5.0 (compatible; econ-lakehouse-pipeline/1.0)",
         "Accept": "application/json",
     }
