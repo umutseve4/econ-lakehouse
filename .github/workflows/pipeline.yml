@@ -32,15 +32,39 @@ jobs:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         run: |
           if [ -z "$EVDS_API_KEY" ]; then
-            echo "EVDS_API_KEY secret not set — skipping live fetch, using synthetic fixture."
+            echo "EVDS_API_KEY secret not set - skipping live fetch, using synthetic fixture."
             echo "SOURCE_CSV=data/sample/cpi_fixture.csv" >> "$GITHUB_ENV"
+            echo "SOURCE_NAME=fixture:synthetic" >> "$GITHUB_ENV"
           else
             python ingest/evds_client.py --series TP.FG.J0 --start 2015-01 --out data/evds/cpi_evds.csv
             echo "SOURCE_CSV=data/evds/cpi_evds.csv" >> "$GITHUB_ENV"
+            echo "SOURCE_NAME=evds:TP.FG.J0" >> "$GITHUB_ENV"
           fi
 
       - name: Ingest -> bronze (Parquet)
-        run: python ingest/ingest.py --source "$SOURCE_CSV" --out warehouse/bronze
+        run: python ingest/ingest.py --source "$SOURCE_CSV" --out warehouse/bronze --source-name "$SOURCE_NAME"
+
+      - name: Idempotency proof (re-ingest must not change row count)
+        run: |
+          python - "$SOURCE_CSV" "$SOURCE_NAME" <<'EOF'
+          import subprocess, sys
+          from pathlib import Path
+          sys.path.insert(0, ".")
+          from ingest.ingest import count_bronze_rows
+          src, name = sys.argv[1], sys.argv[2]
+          before = count_bronze_rows(Path("warehouse/bronze"))
+          subprocess.run(
+              [sys.executable, "ingest/ingest.py", "--source", src,
+               "--out", "warehouse/bronze", "--source-name", name],
+              check=True,
+          )
+          after = count_bronze_rows(Path("warehouse/bronze"))
+          print("===== OTOMATIK KONTROL =====")
+          print(f"rows_before_reingest: {before}")
+          print(f"rows_after_reingest:  {after}")
+          print(f"RESULT: {'PASS' if before == after and before > 0 else 'FAIL'}")
+          assert before == after and before > 0
+          EOF
 
       - name: dbt build (silver + gold + data-quality tests)
         env:

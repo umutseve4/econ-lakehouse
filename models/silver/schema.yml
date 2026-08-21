@@ -12,6 +12,10 @@ models:
         tests: [not_null]
       - name: index_value
         tests: [not_null]
+      - name: source_name
+        tests: [not_null]
+      - name: fetched_at
+        tests: [not_null]
 
   - name: mart_inflation_yoy
     description: Year-over-year inflation per item.
