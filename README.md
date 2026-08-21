@@ -2,6 +2,8 @@
 
 [![pipeline](https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml/badge.svg)](https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml)
 
+**Live demo:** [econ-lakehouse.streamlit.app](https://econ-lakehouse.streamlit.app/) — self-bootstrapping dashboard on live TCMB EVDS data.
+
 Medallion-architecture data warehouse for Turkish macroeconomic data.
 
 **Problem:** CPI/macro data lives scattered across APIs and CSV dumps. Analytical
@@ -99,6 +101,8 @@ warehouse with `LAKE_DB=/path/to.duckdb`.
 
 ### Deploy to Streamlit Community Cloud
 
+**Deployed:** [econ-lakehouse.streamlit.app](https://econ-lakehouse.streamlit.app/)
+
 The dashboard is self-bootstrapping: on a fresh container (no
 `warehouse/econ.duckdb`) it runs the full pipeline once via
 `dashboard/bootstrap.py` → `orchestrate.py` — live TCMB EVDS data when
@@ -154,7 +158,9 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 - **Cloud-ready dashboard:** cold-start bootstrap (`dashboard/bootstrap.py`)
   builds the warehouse on first request via the single-entrypoint pipeline;
   5 stubbed unit tests + a real fixture-mode e2e bootstrap verified in CI.
-- **Not yet deployed:** the live Streamlit Community Cloud URL (manual step).
+- **Deployed:** live on Streamlit Community Cloud at
+  [econ-lakehouse.streamlit.app](https://econ-lakehouse.streamlit.app/),
+  bootstrapping from live TCMB EVDS data (no synthetic-fixture banner).
 
 ## Milestones
 
@@ -166,7 +172,7 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 6. **M6 — serving (done, CI-green):** read-only FastAPI over the gold mart, parameterized filters, fixture unit tests + real-warehouse smoke test in CI.
 7. **M7 — DAG orchestration (done, CI-green):** Dagster software-defined assets over the medallion flow, asset check on gold, job + weekly schedule, in-process materialization test in CI.
 8. **M8 — dashboard (done, CI-green):** Streamlit dashboard over the gold mart, isolated read-only data layer, fixture unit tests + headless AppTest render in CI.
-9. **M9 — cloud deploy (code done, CI-green; live URL pending):** self-bootstrapping dashboard for Streamlit Community Cloud — cold-start warehouse build through `orchestrate.py`, secrets passthrough, honest fixture labeling, e2e bootstrap test in CI.
+9. **M9 — cloud deploy (done, deployed):** self-bootstrapping dashboard live on [Streamlit Community Cloud](https://econ-lakehouse.streamlit.app/) — cold-start warehouse build through `orchestrate.py`, secrets passthrough, honest fixture labeling, e2e bootstrap test in CI.
 
 ## License
 
