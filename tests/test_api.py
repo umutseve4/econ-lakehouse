@@ -95,7 +95,9 @@ def main() -> int:
     r = client.get("/v1/inflation", params={"limit": 99999})
     check("limit_validated_422", r.status_code == 422, str(r.status_code))
 
-    r = client.get("/v1/inflation", params={"item_code": "x'; drop table mart_inflation_yoy; --"})
+    # payload kept under the 32-char item_code limit so it reaches the SQL
+    # layer as a bind parameter instead of being rejected by validation
+    r = client.get("/v1/inflation", params={"item_code": "x'; drop table x; --"})
     check("injection_returns_empty", r.status_code == 200 and r.json() == [], str(r.status_code))
     con = duckdb.connect(db, read_only=True)
     still_there = con.execute("select count(*) from mart_inflation_yoy").fetchone()[0]
