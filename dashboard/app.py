@@ -19,13 +19,38 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from dashboard.bootstrap import ensure_warehouse  # noqa: E402
 from dashboard.data import latest_snapshot, list_items, load_inflation  # noqa: E402
 
 DB_PATH = os.environ.get("LAKE_DB", "warehouse/econ.duckdb")
 
+# Streamlit Cloud passes the EVDS key via app secrets, not env vars — copy it
+# over so orchestrate.py (a plain subprocess) can see it. Guarded because
+# st.secrets raises when no secrets.toml exists (e.g. local runs, CI).
+try:
+    if "EVDS_API_KEY" in st.secrets and not os.environ.get("EVDS_API_KEY"):
+        os.environ["EVDS_API_KEY"] = st.secrets["EVDS_API_KEY"]
+except Exception:
+    pass
+
 st.set_page_config(page_title="econ-lakehouse — CPI dashboard", layout="wide")
 st.title("Türkiye CPI — Year-over-Year Inflation")
 st.caption(f"Source: gold mart `mart_inflation_yoy` · warehouse: `{DB_PATH}`")
+
+# Cold start (fresh container / Streamlit Cloud): build the warehouse once
+# through the same single-entrypoint pipeline used by Docker and CI.
+try:
+    with st.spinner("Warehouse not found — running the pipeline (first start only)..."):
+        boot_mode = ensure_warehouse(DB_PATH)
+except RuntimeError as exc:
+    st.error(f"Pipeline bootstrap failed: {exc}")
+    st.stop()
+
+if boot_mode == "built-fixture":
+    st.warning(
+        "⚠️ Running on the **synthetic fixture dataset** (no EVDS_API_KEY "
+        "configured). Numbers below are NOT real TCMB/TÜİK data."
+    )
 
 if not Path(DB_PATH).exists():
     st.error(
