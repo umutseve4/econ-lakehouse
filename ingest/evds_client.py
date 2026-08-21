@@ -8,7 +8,7 @@ The API key is read ONLY from the EVDS_API_KEY environment variable.
 Never hardcode it. Parsing is separated from fetching so it can be
 unit-tested offline. Exit code 0 = PASS, 1 = FAIL.
 
-EVDS docs: https://evds2.tcmb.gov.tr/help/videos/EVDS_Web_Service_Usage_Guide.pdf
+EVDS 3 docs: https://evds3.tcmb.gov.tr/dokumanlar
 """
 
 from __future__ import annotations
@@ -23,7 +23,11 @@ from pathlib import Path
 
 import pandas as pd
 
-BASE_URL = "https://evds2.tcmb.gov.tr/service/evds/"
+# TCMB launched EVDS 3 (Jan 2026); evds2 redirects to the evds3 SPA and the
+# old /service/evds/ path now serves the SPA HTML too. The official EVDS 3
+# web-service guide uses the /igmevdsms-dis/ path with the same query format
+# and the key in the HTTP request header.
+BASE_URL = "https://evds3.tcmb.gov.tr/igmevdsms-dis/"
 
 # EVDS series -> human-readable item metadata (bronze contract fields)
 SERIES_META = {
@@ -83,9 +87,21 @@ def fetch(series: str, start_ym: str, api_key: str) -> pd.DataFrame:
     today = date.today()
     end = f"01-{today.month:02d}-{today.year}"
 
-    req = urllib.request.Request(build_url(series, start, end), headers={"key": api_key})
+    headers = {
+        "key": api_key,
+        "User-Agent": "Mozilla/5.0 (compatible; econ-lakehouse-pipeline/1.0)",
+        "Accept": "application/json",
+    }
+    req = urllib.request.Request(build_url(series, start, end), headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+        status = getattr(resp, "status", "?")
+        body = resp.read().decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise EvdsError(
+            f"non-JSON response (HTTP {status}): {body[:200]!r}"
+        ) from exc
     return parse_response(payload, series)
 
 
