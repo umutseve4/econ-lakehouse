@@ -2,7 +2,7 @@
 
 [![pipeline](https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml/badge.svg)](https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml)
 
-**Live demo:** [econ-lakehouse.streamlit.app](https://econ-lakehouse.streamlit.app/) — self-bootstrapping dashboard on live TCMB EVDS data.
+**Live demo:** [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/) — self-bootstrapping dashboard on live TCMB EVDS data.
 
 Medallion-architecture data warehouse for Turkish macroeconomic data.
 
@@ -101,12 +101,16 @@ warehouse with `LAKE_DB=/path/to.duckdb`.
 
 ### Deploy to Streamlit Community Cloud
 
-**Deployed:** [econ-lakehouse.streamlit.app](https://econ-lakehouse.streamlit.app/)
+**Deployed:** [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/)
 
 The dashboard is self-bootstrapping: on a fresh container (no
 `warehouse/econ.duckdb`) it runs the full pipeline once via
 `dashboard/bootstrap.py` → `orchestrate.py` — live TCMB EVDS data when
 `EVDS_API_KEY` is configured, honestly-labeled synthetic fixture otherwise.
+Every build writes `warehouse/provenance.json` (`mode`, `source_name`,
+`built_at_utc`, `gold_rows`); the dashboard banner is driven by that file, and
+if a fixture-built warehouse is found while an API key IS available, bootstrap
+wipes it and rebuilds from live data (self-healing, `rebuilt-live`).
 
 1. Go to [share.streamlit.io](https://share.streamlit.io) → **New app** →
    pick this repo, branch `main`, main file `dashboard/app.py`.
@@ -126,6 +130,8 @@ upstream EVDS API change) surfaces without anyone watching CI.
 sub-indices (COICOP codes CP00/CP01/CP07). It exists to exercise the pipeline
 deterministically; it is **not** real official statistics. In CI the pipeline
 switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
+Live mode currently ingests the headline index only (`TP.FG.J0` → CP00);
+sub-index EVDS codes are intentionally not guessed.
 
 ## Status (honest)
 
@@ -133,7 +139,9 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 - **Verified in CI:** live EVDS (TCMB) fetch → bronze → dbt silver/gold build +
   data-quality tests + idempotency proof (re-ingest changes no row counts).
 - **Provenance:** every bronze row carries `source_name` and `fetched_at`
-  (UTC, ISO-8601); silver resolves any residual duplicate by latest fetch.
+  (UTC, ISO-8601); silver resolves any residual duplicate by latest fetch; the
+  warehouse itself carries `warehouse/provenance.json` (fixture vs live, build
+  time, row count) written by `orchestrate.py`.
 - **Dockerized:** single-entrypoint `orchestrate.py`; image built and run
   end-to-end in CI (`docker-smoke` job); scheduled-run failures auto-open a
   GitHub issue.
@@ -157,10 +165,12 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
   (`dashboard-smoke` job).
 - **Cloud-ready dashboard:** cold-start bootstrap (`dashboard/bootstrap.py`)
   builds the warehouse on first request via the single-entrypoint pipeline;
-  5 stubbed unit tests + a real fixture-mode e2e bootstrap verified in CI.
-- **Deployed:** live on Streamlit Community Cloud at
-  [econ-lakehouse.streamlit.app](https://econ-lakehouse.streamlit.app/),
-  bootstrapping from live TCMB EVDS data (no synthetic-fixture banner).
+  8 stubbed unit tests (incl. self-healing rebuild contract) + a real
+  fixture-mode e2e bootstrap with provenance assertion verified in CI.
+- **Deployed & live-verified:** live on Streamlit Community Cloud at
+  [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/),
+  serving real TCMB EVDS data (CP00 headline CPI) with a provenance caption —
+  verified against the deployed app, not just CI.
 
 ## Milestones
 
@@ -172,7 +182,8 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 6. **M6 — serving (done, CI-green):** read-only FastAPI over the gold mart, parameterized filters, fixture unit tests + real-warehouse smoke test in CI.
 7. **M7 — DAG orchestration (done, CI-green):** Dagster software-defined assets over the medallion flow, asset check on gold, job + weekly schedule, in-process materialization test in CI.
 8. **M8 — dashboard (done, CI-green):** Streamlit dashboard over the gold mart, isolated read-only data layer, fixture unit tests + headless AppTest render in CI.
-9. **M9 — cloud deploy (done, deployed):** self-bootstrapping dashboard live on [Streamlit Community Cloud](https://econ-lakehouse.streamlit.app/) — cold-start warehouse build through `orchestrate.py`, secrets passthrough, honest fixture labeling, e2e bootstrap test in CI.
+9. **M9 — cloud deploy (done, deployed):** self-bootstrapping dashboard live on Streamlit Community Cloud — cold-start warehouse build through `orchestrate.py`, secrets passthrough, honest fixture labeling, e2e bootstrap test in CI.
+10. **M10 — data provenance & self-healing deploy (done, live-verified):** `warehouse/provenance.json` written on every build; dashboard banner driven by provenance (fixture warning can never silently disappear); bootstrap detects a fixture warehouse + available API key and rebuilds from live data; verified on the deployed app showing real TCMB CPI.
 
 ## License
 
