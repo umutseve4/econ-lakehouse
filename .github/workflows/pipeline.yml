@@ -27,19 +27,12 @@ jobs:
       - name: Unit tests (EVDS client, offline)
         run: python tests/test_evds_client.py
 
-      - name: EVDS diagnostics (temporary, never fails CI)
-        env:
-          EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
-        run: |
-          pip install requests
-          python ingest/evds_diag.py
-
       - name: Fetch real CPI from EVDS (only when secret configured)
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         run: |
           if [ -z "$EVDS_API_KEY" ]; then
-            echo "EVDS_API_KEY secret not set - skipping live fetch, using synthetic fixture."
+            echo "EVDS_API_KEY secret not set — skipping live fetch, using synthetic fixture."
             echo "SOURCE_CSV=data/sample/cpi_fixture.csv" >> "$GITHUB_ENV"
           else
             python ingest/evds_client.py --series TP.FG.J0 --start 2015-01 --out data/evds/cpi_evds.csv
