@@ -136,6 +136,13 @@ jobs:
       - name: Dashboard tests (data layer + AppTest, fixture warehouse)
         run: python tests/test_dashboard.py
 
+      - name: Bootstrap unit tests (subprocess stubbed)
+        run: python tests/test_bootstrap.py
+
+      - name: Cold-start bootstrap e2e (fixture mode, real pipeline)
+        run: |
+          python -c "from dashboard.bootstrap import ensure_warehouse; m = ensure_warehouse(); print('===== OTOMATIK KONTROL ====='); print('bootstrap_mode:', m); ok = (m == 'built-fixture'); print('RESULT:', 'PASS' if ok else 'FAIL'); import sys; sys.exit(0 if ok else 1)"
+
   dagster-orchestration:
     # Materializes the full asset graph (bronze -> marts + checks) in-process
     # on a clean checkout, in deterministic fixture mode (no EVDS secret).
