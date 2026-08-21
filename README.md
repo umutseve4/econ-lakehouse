@@ -65,6 +65,22 @@ warehouse is opened `read_only=True`, filters are fully parameterized, and
 `limit` is capped at 1000. Interactive docs at `/docs` (OpenAPI). Point it at
 another warehouse with `LAKE_DB=/path/to.duckdb`.
 
+### DAG orchestration (Dagster)
+
+```bash
+pip install dagster dagster-webserver
+dagster dev -f orchestration/definitions.py   # asset graph UI at localhost:3000
+```
+
+The pipeline is also expressed as a Dagster **asset graph**
+(`bronze_cpi → warehouse_marts`, plus a `gold_nonempty` asset check), with a
+`cpi_pipeline_job` and a weekly schedule mirroring the CI cron. Assets shell
+out to the same entrypoints CI verifies (`ingest/ingest.py`, `dbt build`), so
+orchestration adds lineage, retries, and observability without forking the
+pipeline logic. The idempotency proof runs inside the bronze asset on every
+materialization. CI materializes the whole graph in-process in fixture mode
+(`dagster-orchestration` job, `tests/test_dag.py`).
+
 ### Scheduling & alerting
 
 CI runs the full pipeline weekly (`cron: 17 6 * * 1`). If a **scheduled** run
@@ -100,7 +116,10 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
   `/v1/inflation`, `/v1/inflation/latest`); 13 fixture-based unit tests
   (incl. SQL-injection and limit-validation checks) plus a CI smoke test
   against the real pipeline-built warehouse.
-- **Not yet built:** Airflow/Dagster-style DAG orchestration, dashboards.
+- **DAG orchestration:** Dagster asset graph (`bronze_cpi → warehouse_marts`
+  + `gold_nonempty` check) with job + weekly schedule; full in-process
+  materialization verified in CI (`dagster-orchestration` job).
+- **Not yet built:** dashboards.
 
 ## Milestones
 
@@ -110,7 +129,8 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 4. **M4 — orchestration (done, CI-green):** Docker image + `orchestrate.py` entrypoint, weekly scheduled runs, auto-issue on scheduled failure.
 5. **M5 — durability (done, CI-green):** S3-compatible remote storage for bronze (fsspec + MinIO in CI), dbt snapshot for late revisions with an end-to-end revision test.
 6. **M6 — serving (done, CI-green):** read-only FastAPI over the gold mart, parameterized filters, fixture unit tests + real-warehouse smoke test in CI.
-7. **M7 — candidate:** lightweight dashboard consuming the API, or DAG-native orchestration.
+7. **M7 — DAG orchestration (done, CI-green):** Dagster software-defined assets over the medallion flow, asset check on gold, job + weekly schedule, in-process materialization test in CI.
+8. **M8 — candidate:** lightweight dashboard consuming the API.
 
 ## License
 
