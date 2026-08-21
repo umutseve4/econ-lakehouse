@@ -51,6 +51,20 @@ docker run --rm -e EVDS_API_KEY=... econ-lakehouse    # live mode
 The container runs `orchestrate.py`: fetch → bronze ingest → idempotency
 proof → dbt build → gold sanity check, and exits non-zero on any failure.
 
+### Serving API
+
+```bash
+uvicorn serve.app:app --port 8000
+curl http://localhost:8000/health                          # {"status":"ok","gold_rows":N}
+curl 'http://localhost:8000/v1/inflation?year=2024&limit=5'
+curl http://localhost:8000/v1/inflation/latest             # newest observation per item
+```
+
+Read-only FastAPI layer over the gold mart (`mart_inflation_yoy`). The
+warehouse is opened `read_only=True`, filters are fully parameterized, and
+`limit` is capped at 1000. Interactive docs at `/docs` (OpenAPI). Point it at
+another warehouse with `LAKE_DB=/path/to.duckdb`.
+
 ### Scheduling & alerting
 
 CI runs the full pipeline weekly (`cron: 17 6 * * 1`). If a **scheduled** run
@@ -82,6 +96,10 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 - **Late-revision history:** dbt snapshot (SCD Type 2, check strategy on
   `index_value`) captures TCMB revisions as closed/open versions; a CI test
   proves a revised value produces exactly one closed and one current version.
+- **Serving:** read-only FastAPI endpoints over the gold mart (`/health`,
+  `/v1/inflation`, `/v1/inflation/latest`); 13 fixture-based unit tests
+  (incl. SQL-injection and limit-validation checks) plus a CI smoke test
+  against the real pipeline-built warehouse.
 - **Not yet built:** Airflow/Dagster-style DAG orchestration, dashboards.
 
 ## Milestones
@@ -91,7 +109,8 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 3. **M3 — incremental (done, CI-green):** provenance columns + idempotent upsert.
 4. **M4 — orchestration (done, CI-green):** Docker image + `orchestrate.py` entrypoint, weekly scheduled runs, auto-issue on scheduled failure.
 5. **M5 — durability (done, CI-green):** S3-compatible remote storage for bronze (fsspec + MinIO in CI), dbt snapshot for late revisions with an end-to-end revision test.
-6. **M6 — serving:** analytics-ready serving layer (dashboard or API) on top of the gold mart.
+6. **M6 — serving (done, CI-green):** read-only FastAPI over the gold mart, parameterized filters, fixture unit tests + real-warehouse smoke test in CI.
+7. **M7 — candidate:** lightweight dashboard consuming the API, or DAG-native orchestration.
 
 ## License
 
