@@ -19,7 +19,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dashboard.bootstrap import ensure_warehouse  # noqa: E402
+from dashboard.bootstrap import ensure_warehouse, read_provenance  # noqa: E402
 from dashboard.data import latest_snapshot, list_items, load_inflation  # noqa: E402
 
 DB_PATH = os.environ.get("LAKE_DB", "warehouse/econ.duckdb")
@@ -38,18 +38,38 @@ st.title("Türkiye CPI — Year-over-Year Inflation")
 st.caption(f"Source: gold mart `mart_inflation_yoy` · warehouse: `{DB_PATH}`")
 
 # Cold start (fresh container / Streamlit Cloud): build the warehouse once
-# through the same single-entrypoint pipeline used by Docker and CI.
+# through the same single-entrypoint pipeline used by Docker and CI. The
+# bootstrap is provenance-aware: a stale fixture warehouse is rebuilt live
+# automatically once the EVDS_API_KEY secret becomes available.
 try:
-    with st.spinner("Warehouse not found — running the pipeline (first start only)..."):
+    with st.spinner("Preparing the warehouse (first start may take a minute)..."):
         boot_mode = ensure_warehouse(DB_PATH)
 except RuntimeError as exc:
     st.error(f"Pipeline bootstrap failed: {exc}")
     st.stop()
 
-if boot_mode == "built-fixture":
+# The banner must reflect what is IN the warehouse, not what happened during
+# this particular boot: Streamlit reruns the script constantly, and on every
+# rerun after the first the warehouse already exists. Persisted provenance
+# (written by orchestrate.py) is the durable source of truth.
+prov = read_provenance(DB_PATH)
+prov_mode = (prov or {}).get("mode")
+
+if prov_mode == "fixture" or (prov is None and boot_mode == "built-fixture"):
     st.warning(
         "⚠️ Running on the **synthetic fixture dataset** (no EVDS_API_KEY "
         "configured). Numbers below are NOT real TCMB/TÜİK data."
+    )
+elif prov_mode == "live":
+    st.caption(
+        f"✅ Live EVDS data · source `{prov.get('source_name', '?')}` · "
+        f"built {prov.get('built_at_utc', '?')} UTC"
+    )
+
+if boot_mode == "rebuilt-live":
+    st.info(
+        "♻️ The previous warehouse was built from the synthetic fixture; "
+        "it has been rebuilt automatically with live EVDS data."
     )
 
 if not Path(DB_PATH).exists():
