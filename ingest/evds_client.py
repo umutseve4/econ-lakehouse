@@ -83,9 +83,22 @@ def fetch(series: str, start_ym: str, api_key: str) -> pd.DataFrame:
     today = date.today()
     end = f"01-{today.month:02d}-{today.year}"
 
-    req = urllib.request.Request(build_url(series, start, end), headers={"key": api_key})
+    headers = {
+        "key": api_key,
+        # EVDS'in WAF'ı varsayılan urllib User-Agent'ını engelleyebiliyor.
+        "User-Agent": "Mozilla/5.0 (compatible; econ-lakehouse-pipeline/1.0)",
+        "Accept": "application/json",
+    }
+    req = urllib.request.Request(build_url(series, start, end), headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+        status = getattr(resp, "status", "?")
+        body = resp.read().decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise EvdsError(
+            f"non-JSON response (HTTP {status}): {body[:200]!r}"
+        ) from exc
     return parse_response(payload, series)
 
 
