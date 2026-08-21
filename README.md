@@ -52,13 +52,19 @@ EVDS/TÜİK API into `ingest/` is the next milestone.
 - **Verified locally:** bronze ingest — 6/6 unit tests + end-to-end run PASS.
 - **Verified in CI:** dbt silver/gold build + data-quality tests (see badge; the
   first green run is the acceptance evidence for this layer).
-- **Not yet built:** real EVDS/TÜİK API ingest, incremental loads, Airflow/Dagster
-  orchestration, Docker image. Tracked as milestones below.
+- **Implemented + unit-tested offline:** EVDS (TCMB) API client
+  (`ingest/evds_client.py`) — parsing is verified against a recorded fixture;
+  the **live fetch is not yet verified** because it requires an `EVDS_API_KEY`
+  secret. CI automatically switches from the synthetic fixture to real EVDS
+  data once the repository secret is configured (Settings → Secrets →
+  Actions → `EVDS_API_KEY`; free key from https://evds2.tcmb.gov.tr).
+- **Not yet built:** incremental loads, Airflow/Dagster orchestration,
+  Docker image. Tracked as milestones below.
 
 ## Milestones
 
 1. **M1 — vertical slice (this repo now):** fixture CSV → bronze → silver → gold, all gated, CI-green.
-2. **M2 — real data:** EVDS API ingest with retry/rate-limit handling + provenance columns (source, fetched_at).
+2. **M2 — real data (client done, awaiting key):** EVDS API ingest; next: retry/rate-limit handling + provenance columns (source, fetched_at).
 3. **M3 — incremental:** append-only monthly loads, snapshot tests for late revisions.
 4. **M4 — orchestration:** Dockerized scheduled runs, failure alerting.
 
