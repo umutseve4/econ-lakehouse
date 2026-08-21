@@ -1,0 +1,46 @@
+name: pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"  # weekly rehearsal run, Monday 06:17 UTC
+  workflow_dispatch:
+
+jobs:
+  ingest-and-transform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit tests (bronze contract)
+        run: python tests/test_ingest.py
+
+      - name: Ingest -> bronze (Parquet)
+        run: python ingest/ingest.py --source data/sample/cpi_fixture.csv --out warehouse/bronze
+
+      - name: dbt build (silver + gold + data-quality tests)
+        env:
+          DBT_PROFILES_DIR: .
+        run: dbt build --project-dir .
+
+      - name: Show gold mart sample
+        run: |
+          python - <<'EOF'
+          import duckdb
+          con = duckdb.connect("warehouse/econ.duckdb")
+          print(con.sql("select * from mart_inflation_yoy order by obs_date, item_code limit 12"))
+          n = con.sql("select count(*) from mart_inflation_yoy").fetchone()[0]
+          print("===== OTOMATIK KONTROL =====")
+          print(f"gold_rows: {n}")
+          print(f"RESULT: {'PASS' if n > 0 else 'FAIL'}")
+          assert n > 0
+          EOF

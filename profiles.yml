@@ -1,0 +1,7 @@
+econ_lakehouse:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: warehouse/econ.duckdb
+      threads: 2

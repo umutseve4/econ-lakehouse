@@ -1,0 +1,20 @@
+version: 2
+
+models:
+  - name: stg_cpi
+    description: Typed, deduplicated CPI observations from the bronze Parquet lake.
+    columns:
+      - name: obs_date
+        tests: [not_null]
+      - name: item_code
+        tests: [not_null]
+      - name: item_name
+        tests: [not_null]
+      - name: index_value
+        tests: [not_null]
+
+  - name: mart_inflation_yoy
+    description: Year-over-year inflation per item.
+    columns:
+      - name: yoy_inflation_pct
+        tests: [not_null]

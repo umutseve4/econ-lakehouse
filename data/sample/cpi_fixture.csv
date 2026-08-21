@@ -1,0 +1,37 @@
+date,item_code,item_name,index_value
+2025-01-01,CP00,All items,2105.43
+2025-02-01,CP00,All items,2167.88
+2025-03-01,CP00,All items,2231.05
+2025-04-01,CP00,All items,2298.47
+2025-05-01,CP00,All items,2351.12
+2025-06-01,CP00,All items,2402.66
+2025-01-01,CP01,Food and non-alcoholic beverages,2540.10
+2025-02-01,CP01,Food and non-alcoholic beverages,2618.34
+2025-03-01,CP01,Food and non-alcoholic beverages,2695.71
+2025-04-01,CP01,Food and non-alcoholic beverages,2770.02
+2025-05-01,CP01,Food and non-alcoholic beverages,2833.90
+2025-06-01,CP01,Food and non-alcoholic beverages,2891.55
+2025-01-01,CP07,Transport,1890.22
+2025-02-01,CP07,Transport,1934.75
+2025-03-01,CP07,Transport,1988.13
+2025-04-01,CP07,Transport,2041.60
+2025-05-01,CP07,Transport,2087.44
+2025-06-01,CP07,Transport,2130.09
+2024-01-01,CP00,All items,1450.30
+2024-02-01,CP00,All items,1512.77
+2024-03-01,CP00,All items,1560.41
+2024-04-01,CP00,All items,1611.86
+2024-05-01,CP00,All items,1665.02
+2024-06-01,CP00,All items,1701.98
+2024-01-01,CP01,Food and non-alcoholic beverages,1720.55
+2024-02-01,CP01,Food and non-alcoholic beverages,1798.20
+2024-03-01,CP01,Food and non-alcoholic beverages,1852.66
+2024-04-01,CP01,Food and non-alcoholic beverages,1907.31
+2024-05-01,CP01,Food and non-alcoholic beverages,1961.75
+2024-06-01,CP01,Food and non-alcoholic beverages,2003.14
+2024-01-01,CP07,Transport,1280.90
+2024-02-01,CP07,Transport,1321.44
+2024-03-01,CP07,Transport,1367.02
+2024-04-01,CP07,Transport,1410.53
+2024-05-01,CP07,Transport,1455.87
+2024-06-01,CP07,Transport,1490.66

@@ -1,0 +1,13 @@
+name: econ_lakehouse
+version: 0.1.0
+profile: econ_lakehouse
+
+model-paths: ["models"]
+test-paths: ["tests/dbt"]
+
+models:
+  econ_lakehouse:
+    silver:
+      +materialized: view
+    gold:
+      +materialized: table
