@@ -141,7 +141,20 @@ jobs:
 
       - name: Cold-start bootstrap e2e (fixture mode, real pipeline)
         run: |
-          python -c "from dashboard.bootstrap import ensure_warehouse; m = ensure_warehouse(); print('===== OTOMATIK KONTROL ====='); print('bootstrap_mode:', m); ok = (m == 'built-fixture'); print('RESULT:', 'PASS' if ok else 'FAIL'); import sys; sys.exit(0 if ok else 1)"
+          python - <<'EOF'
+          import json, sys
+          from pathlib import Path
+          from dashboard.bootstrap import ensure_warehouse
+          m = ensure_warehouse()
+          prov = json.loads(Path("warehouse/provenance.json").read_text())
+          print("===== OTOMATIK KONTROL =====")
+          print("bootstrap_mode:", m)
+          print("provenance_mode:", prov.get("mode"))
+          print("provenance_source:", prov.get("source_name"))
+          ok = m == "built-fixture" and prov.get("mode") == "fixture"
+          print("RESULT:", "PASS" if ok else "FAIL")
+          sys.exit(0 if ok else 1)
+          EOF
 
   dagster-orchestration:
     # Materializes the full asset graph (bronze -> marts + checks) in-process

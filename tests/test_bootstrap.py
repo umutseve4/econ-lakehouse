@@ -6,6 +6,7 @@ bootstrap is exercised separately in CI (dashboard-smoke job).
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -26,6 +27,13 @@ def check(name: str, cond: bool) -> None:
 class _Proc:
     def __init__(self, returncode: int) -> None:
         self.returncode = returncode
+
+
+def _write_provenance(db: Path, mode: str) -> None:
+    (db.parent / "provenance.json").write_text(
+        json.dumps({"mode": mode, "source_name": f"{mode}:test"}),
+        encoding="utf-8",
+    )
 
 
 def run_all() -> int:
@@ -83,6 +91,58 @@ def run_all() -> int:
                 check("missing_output_raises", False)
             except RuntimeError:
                 check("missing_output_raises", True)
+
+        # --- provenance-aware self-healing rebuild contract ---
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # 6) fixture provenance + key set -> wipe & rebuild -> rebuilt-live
+            db = Path(tmp) / "econ.duckdb"
+            db.write_bytes(b"stale-fixture")
+            _write_provenance(db, "fixture")
+            (db.parent / "bronze").mkdir()
+            (db.parent / "bronze" / "part.parquet").write_bytes(b"stub")
+
+            calls = {"n": 0}
+
+            def _rebuild(*a, **k):  # noqa: ANN002, ANN003
+                calls["n"] += 1
+                db.write_bytes(b"fresh-live")
+                _write_provenance(db, "live")
+                return _Proc(0)
+
+            os.environ["EVDS_API_KEY"] = "dummy"
+            bootstrap.subprocess.run = _rebuild
+            result = bootstrap.ensure_warehouse(db)
+            check("fixture_plus_key_rebuilds",
+                  result == "rebuilt-live" and calls["n"] == 1
+                  and not (db.parent / "bronze").exists()
+                  and bootstrap.read_provenance(db).get("mode") == "live")
+            del os.environ["EVDS_API_KEY"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # 7) fixture provenance + NO key -> stays, subprocess must not run
+            db = Path(tmp) / "econ.duckdb"
+            db.write_bytes(b"stub")
+            _write_provenance(db, "fixture")
+
+            def _explode2(*a, **k):  # noqa: ANN002, ANN003
+                raise AssertionError("subprocess.run called unexpectedly")
+
+            bootstrap.subprocess.run = _explode2
+            check("fixture_no_key_stays",
+                  bootstrap.ensure_warehouse(db) == "exists")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # 8) live provenance + key set -> stays, no needless rebuild
+            db = Path(tmp) / "econ.duckdb"
+            db.write_bytes(b"stub")
+            _write_provenance(db, "live")
+
+            os.environ["EVDS_API_KEY"] = "dummy"
+            bootstrap.subprocess.run = _explode2
+            check("live_plus_key_stays",
+                  bootstrap.ensure_warehouse(db) == "exists")
+            del os.environ["EVDS_API_KEY"]
     finally:
         bootstrap.subprocess.run = orig_run
         if orig_key is not None:
