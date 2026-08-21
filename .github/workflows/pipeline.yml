@@ -118,6 +118,23 @@ jobs:
             echo "RESULT: FAIL"; exit 1
           fi
 
+  dagster-orchestration:
+    # Materializes the full asset graph (bronze -> marts + checks) in-process
+    # on a clean checkout, in deterministic fixture mode (no EVDS secret).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Dagster DAG test (asset graph + in-process materialization)
+        run: python tests/test_dag.py
+
   remote-storage:
     # Proves the bronze lake runs unchanged on S3-compatible object storage.
     # MinIO is throwaway (lives only for this job), so hardcoded creds here
@@ -175,7 +192,7 @@ jobs:
     # Opens a GitHub issue when a scheduled run fails, so silent breakage
     # (e.g. an upstream EVDS API change) surfaces without anyone watching CI.
     runs-on: ubuntu-latest
-    needs: [ingest-and-transform, docker-smoke, remote-storage]
+    needs: [ingest-and-transform, docker-smoke, remote-storage, dagster-orchestration]
     if: failure() && github.event_name == 'schedule'
     permissions:
       issues: write
