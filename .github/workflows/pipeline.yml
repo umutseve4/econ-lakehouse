@@ -118,6 +118,24 @@ jobs:
             echo "RESULT: FAIL"; exit 1
           fi
 
+  dashboard-smoke:
+    # Dashboard data layer unit tests + headless Streamlit AppTest render
+    # over a fixture warehouse — proves the UI code path executes without
+    # exceptions on a clean checkout.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Dashboard tests (data layer + AppTest, fixture warehouse)
+        run: python tests/test_dashboard.py
+
   dagster-orchestration:
     # Materializes the full asset graph (bronze -> marts + checks) in-process
     # on a clean checkout, in deterministic fixture mode (no EVDS secret).
@@ -192,7 +210,7 @@ jobs:
     # Opens a GitHub issue when a scheduled run fails, so silent breakage
     # (e.g. an upstream EVDS API change) surfaces without anyone watching CI.
     runs-on: ubuntu-latest
-    needs: [ingest-and-transform, docker-smoke, remote-storage, dagster-orchestration]
+    needs: [ingest-and-transform, docker-smoke, remote-storage, dagster-orchestration, dashboard-smoke]
     if: failure() && github.event_name == 'schedule'
     permissions:
       issues: write

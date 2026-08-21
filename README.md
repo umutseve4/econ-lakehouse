@@ -81,6 +81,22 @@ pipeline logic. The idempotency proof runs inside the bronze asset on every
 materialization. CI materializes the whole graph in-process in fixture mode
 (`dagster-orchestration` job, `tests/test_dag.py`).
 
+### Dashboard (Streamlit)
+
+```bash
+pip install streamlit
+streamlit run dashboard/app.py            # UI at localhost:8501
+```
+
+Interactive dashboard over the gold mart: latest YoY inflation per item
+(`st.metric`), filterable time-series chart, raw data table, CSV export.
+Presentation and data access are separated — every query lives in
+`dashboard/data.py` (read-only DuckDB connection, parameterized SQL) so the
+data layer is unit-tested independently of the UI. CI renders the whole app
+headlessly via Streamlit's `AppTest` against a fixture warehouse
+(`dashboard-smoke` job, `tests/test_dashboard.py`). Point it at another
+warehouse with `LAKE_DB=/path/to.duckdb`.
+
 ### Scheduling & alerting
 
 CI runs the full pipeline weekly (`cron: 17 6 * * 1`). If a **scheduled** run
@@ -119,7 +135,11 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 - **DAG orchestration:** Dagster asset graph (`bronze_cpi → warehouse_marts`
   + `gold_nonempty` check) with job + weekly schedule; full in-process
   materialization verified in CI (`dagster-orchestration` job).
-- **Not yet built:** dashboards.
+- **Dashboard:** Streamlit UI over the gold mart (metrics, filterable chart,
+  CSV export); data layer isolated in `dashboard/data.py` (read-only,
+  parameterized); 11 unit tests + headless `AppTest` render verified in CI
+  (`dashboard-smoke` job).
+- **Not yet built:** cloud deployment of the API/dashboard.
 
 ## Milestones
 
@@ -130,7 +150,7 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 5. **M5 — durability (done, CI-green):** S3-compatible remote storage for bronze (fsspec + MinIO in CI), dbt snapshot for late revisions with an end-to-end revision test.
 6. **M6 — serving (done, CI-green):** read-only FastAPI over the gold mart, parameterized filters, fixture unit tests + real-warehouse smoke test in CI.
 7. **M7 — DAG orchestration (done, CI-green):** Dagster software-defined assets over the medallion flow, asset check on gold, job + weekly schedule, in-process materialization test in CI.
-8. **M8 — candidate:** lightweight dashboard consuming the API.
+8. **M8 — dashboard (done, CI-green):** Streamlit dashboard over the gold mart, isolated read-only data layer, fixture unit tests + headless AppTest render in CI.
 
 ## License
 
