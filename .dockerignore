@@ -1,0 +1,13 @@
+.git
+.github
+__pycache__
+**/__pycache__
+*.pyc
+warehouse/
+data/evds/
+target/
+dbt_packages/
+logs/
+*.duckdb
+.dockerignore
+Dockerfile
