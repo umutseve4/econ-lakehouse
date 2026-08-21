@@ -97,6 +97,18 @@ headlessly via Streamlit's `AppTest` against a fixture warehouse
 (`dashboard-smoke` job, `tests/test_dashboard.py`). Point it at another
 warehouse with `LAKE_DB=/path/to.duckdb`.
 
+### Deploy to Streamlit Community Cloud
+
+The dashboard is self-bootstrapping: on a fresh container (no
+`warehouse/econ.duckdb`) it runs the full pipeline once via
+`dashboard/bootstrap.py` → `orchestrate.py` — live TCMB EVDS data when
+`EVDS_API_KEY` is configured, honestly-labeled synthetic fixture otherwise.
+
+1. Go to [share.streamlit.io](https://share.streamlit.io) → **New app** →
+   pick this repo, branch `main`, main file `dashboard/app.py`.
+2. In **Advanced settings → Secrets** add: `EVDS_API_KEY = "your-key"`.
+3. Deploy. First load takes ~1–2 min (pipeline cold start), then it's cached.
+
 ### Scheduling & alerting
 
 CI runs the full pipeline weekly (`cron: 17 6 * * 1`). If a **scheduled** run
@@ -139,7 +151,10 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
   CSV export); data layer isolated in `dashboard/data.py` (read-only,
   parameterized); 11 unit tests + headless `AppTest` render verified in CI
   (`dashboard-smoke` job).
-- **Not yet built:** cloud deployment of the API/dashboard.
+- **Cloud-ready dashboard:** cold-start bootstrap (`dashboard/bootstrap.py`)
+  builds the warehouse on first request via the single-entrypoint pipeline;
+  5 stubbed unit tests + a real fixture-mode e2e bootstrap verified in CI.
+- **Not yet deployed:** the live Streamlit Community Cloud URL (manual step).
 
 ## Milestones
 
@@ -151,6 +166,7 @@ switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
 6. **M6 — serving (done, CI-green):** read-only FastAPI over the gold mart, parameterized filters, fixture unit tests + real-warehouse smoke test in CI.
 7. **M7 — DAG orchestration (done, CI-green):** Dagster software-defined assets over the medallion flow, asset check on gold, job + weekly schedule, in-process materialization test in CI.
 8. **M8 — dashboard (done, CI-green):** Streamlit dashboard over the gold mart, isolated read-only data layer, fixture unit tests + headless AppTest render in CI.
+9. **M9 — cloud deploy (code done, CI-green; live URL pending):** self-bootstrapping dashboard for Streamlit Community Cloud — cold-start warehouse build through `orchestrate.py`, secrets passthrough, honest fixture labeling, e2e bootstrap test in CI.
 
 ## License
 
