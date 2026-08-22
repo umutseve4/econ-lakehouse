@@ -44,6 +44,12 @@ jobs:
             echo "SOURCE_NAME=evds:TP.FG.J0" >> "$GITHUB_ENV"
           fi
 
+      - name: EVDS freshness probe (diagnostic, never gates CI)
+        env:
+          EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
+        continue-on-error: true
+        run: python ingest/evds_freshness.py
+
       - name: Ingest -> bronze (Parquet)
         run: python ingest/ingest.py --source "$SOURCE_CSV" --out warehouse/bronze --source-name "$SOURCE_NAME"
 
@@ -85,6 +91,22 @@ jobs:
           print(f"gold_rows: {n}")
           print(f"RESULT: {'PASS' if n > 0 else 'FAIL'}")
           assert n > 0
+          EOF
+
+      - name: Gold freshness report (lag between newest obs and today)
+        run: |
+          python - <<'EOF'
+          import duckdb
+          from datetime import date
+          con = duckdb.connect("warehouse/econ.duckdb")
+          newest = con.sql("select max(obs_date) from mart_inflation_yoy").fetchone()[0]
+          today = date.today()
+          lag = (today.year - newest.year) * 12 + (today.month - newest.month)
+          print("===== OTOMATIK KONTROL =====")
+          print(f"gold_newest_obs: {newest}")
+          print(f"today: {today}")
+          print(f"lag_months: {lag}")
+          print(f"RESULT: {'PASS' if lag <= 3 else 'WARN (stale beyond 3 months)'}")
           EOF
 
       - name: Snapshot test (late-revision history, SCD Type 2)
