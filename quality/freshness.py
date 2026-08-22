@@ -8,7 +8,7 @@ from typing import Any
 MAX_LAG_MONTHS = 3
 
 
-def _as_date(value: Any) -> date:
+def normalize_observation_date(value: Any) -> date:
     """Normalize date-like values, including EVDS's unpadded YYYY-M format."""
     if isinstance(value, datetime):
         return value.date()
@@ -29,8 +29,8 @@ def _as_date(value: Any) -> date:
 
 def observation_lag_months(observed_on: Any, as_of: Any | None = None) -> int:
     """Whole calendar-month lag between an observation and an as-of date."""
-    observed = _as_date(observed_on)
-    current = _as_date(as_of) if as_of is not None else date.today()
+    observed = normalize_observation_date(observed_on)
+    current = normalize_observation_date(as_of) if as_of is not None else date.today()
     lag = (current.year - observed.year) * 12 + current.month - observed.month
     return max(0, lag)
 
@@ -41,7 +41,7 @@ def freshness_state(
     max_lag_months: int = MAX_LAG_MONTHS,
 ) -> tuple[str, int, str]:
     """Return severity, exact month lag, and a user-facing message."""
-    observed = _as_date(observed_on)
+    observed = normalize_observation_date(observed_on)
     lag = observation_lag_months(observed, as_of)
     if lag > max_lag_months:
         return (

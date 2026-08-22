@@ -9,16 +9,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from quality.freshness import MAX_LAG_MONTHS, freshness_state  # noqa: E402
+from quality.freshness import (  # noqa: E402
+    MAX_LAG_MONTHS,
+    freshness_state,
+    normalize_observation_date,
+)
 
 
 def newest_observation(csv_path: Path) -> str:
     with csv_path.open(encoding="utf-8", newline="") as handle:
-        dates = [row.get("date", "").strip() for row in csv.DictReader(handle)]
-    dates = [value for value in dates if value]
-    if not dates:
+        raw_dates = [
+            row.get("date", "").strip() for row in csv.DictReader(handle)
+        ]
+    raw_dates = [value for value in raw_dates if value]
+    if not raw_dates:
         raise ValueError(f"no observation dates found in {csv_path}")
-    return max(dates)
+    newest = max(normalize_observation_date(value) for value in raw_dates)
+    return newest.isoformat()
 
 
 def main() -> int:
