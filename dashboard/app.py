@@ -21,12 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dashboard.bootstrap import ensure_warehouse, read_provenance  # noqa: E402
 from dashboard.data import latest_snapshot, list_items, load_inflation  # noqa: E402
+from quality.freshness import freshness_state  # noqa: E402
 
 DB_PATH = os.environ.get("LAKE_DB", "warehouse/econ.duckdb")
 
-# Streamlit Cloud passes the EVDS key via app secrets, not env vars — copy it
-# over so orchestrate.py (a plain subprocess) can see it. Guarded because
-# st.secrets raises when no secrets.toml exists (e.g. local runs, CI).
 try:
     if "EVDS_API_KEY" in st.secrets and not os.environ.get("EVDS_API_KEY"):
         os.environ["EVDS_API_KEY"] = st.secrets["EVDS_API_KEY"]
@@ -37,10 +35,6 @@ st.set_page_config(page_title="econ-lakehouse — CPI dashboard", layout="wide")
 st.title("Türkiye CPI — Year-over-Year Inflation")
 st.caption(f"Source: gold mart `mart_inflation_yoy` · warehouse: `{DB_PATH}`")
 
-# Cold start (fresh container / Streamlit Cloud): build the warehouse once
-# through the same single-entrypoint pipeline used by Docker and CI. The
-# bootstrap is provenance-aware: a stale fixture warehouse is rebuilt live
-# automatically once the EVDS_API_KEY secret becomes available.
 try:
     with st.spinner("Preparing the warehouse (first start may take a minute)..."):
         boot_mode = ensure_warehouse(DB_PATH)
@@ -48,10 +42,6 @@ except RuntimeError as exc:
     st.error(f"Pipeline bootstrap failed: {exc}")
     st.stop()
 
-# The banner must reflect what is IN the warehouse, not what happened during
-# this particular boot: Streamlit reruns the script constantly, and on every
-# rerun after the first the warehouse already exists. Persisted provenance
-# (written by orchestrate.py) is the durable source of truth.
 prov = read_provenance(DB_PATH)
 prov_mode = (prov or {}).get("mode")
 
@@ -62,14 +52,14 @@ if prov_mode == "fixture" or (prov is None and boot_mode == "built-fixture"):
     )
 elif prov_mode == "live":
     st.caption(
-        f"✅ Live EVDS data · source `{prov.get('source_name', '?')}` · "
-        f"built {prov.get('built_at_utc', '?')} UTC"
+        f"✅ Official EVDS source · `{prov.get('source_name', '?')}` · "
+        f"warehouse built {prov.get('built_at_utc', '?')} UTC"
     )
 
 if boot_mode == "rebuilt-live":
     st.info(
         "♻️ The previous warehouse was built from the synthetic fixture; "
-        "it has been rebuilt automatically with live EVDS data."
+        "it has been rebuilt automatically with official EVDS data."
     )
 
 if not Path(DB_PATH).exists():
@@ -84,14 +74,26 @@ if not items:
     st.warning("Gold mart is empty — nothing to display.")
     st.stop()
 
+all_latest = latest_snapshot(DB_PATH)
+if len(all_latest) > 0:
+    newest_observation = all_latest["obs_date"].max()
+    severity, lag_months, freshness_message = freshness_state(newest_observation)
+    if severity == "error":
+        st.error(f"🚨 **{freshness_message}**")
+    else:
+        st.success(f"✅ {freshness_message}")
+    st.caption(
+        f"Freshness policy: maximum 3 calendar months · exact lag: {lag_months} month(s)."
+    )
+
 selected = st.sidebar.multiselect("Item codes", options=items, default=items)
 
 df = load_inflation(DB_PATH, item_codes=selected or None)
-latest = latest_snapshot(DB_PATH)
+latest = all_latest
 if selected:
     latest = latest[latest["item_code"].isin(selected)]
 
-st.subheader("Latest observation per item")
+st.subheader("Latest available observation per item")
 if len(latest) > 0:
     cols = st.columns(len(latest))
     for col, (_, row) in zip(cols, latest.iterrows()):
