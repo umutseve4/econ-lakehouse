@@ -1,0 +1,47 @@
+name: m11-diagnostics
+
+# TEMPORARY — delete before merging PR #12.
+# Answers one question with live EVDS data: can TP.TUFE1YI.T1 replace the
+# frozen TP.FG.J0 without changing what the mart measures?
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  series-comparison:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compare candidate CPI series (live)
+        env:
+          EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
+        continue-on-error: true
+        run: |
+          python ingest/evds_series_compare.py 2>&1 | tee /tmp/compare.txt
+
+      - name: Publish comparison onto the pull request
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let out;
+            try { out = fs.readFileSync('/tmp/compare.txt', 'utf8').slice(0, 55000); }
+            catch (e) { out = '(no output captured)'; }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: ['## M11 series comparison (automated)', '```', out, '```'].join('\n'),
+            });
