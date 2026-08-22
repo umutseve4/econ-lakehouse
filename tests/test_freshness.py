@@ -40,11 +40,15 @@ def main() -> int:
             writer.writeheader()
             writer.writerows(
                 [
-                    {"date": "2026-01-01", "item_code": "CP00"},
+                    {"date": "2026-9", "item_code": "CP00"},
+                    {"date": "2026-10", "item_code": "CP00"},
                     {"date": "2025-12-01", "item_code": "CP00"},
                 ]
             )
-        check("csv_newest_observation", newest_observation(path) == "2026-01-01")
+        check(
+            "csv_newest_observation_unpadded_months",
+            newest_observation(path) == "2026-10-01",
+        )
 
     failed = sum(not ok for _, ok in checks)
     print("===== OTOMATIK KONTROL =====")
