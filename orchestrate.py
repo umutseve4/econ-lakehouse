@@ -69,9 +69,14 @@ def _record_run(
 ) -> None:
     """Append this execution to the audit log; never break the pipeline.
 
-    Observability must not become a new failure mode: if the audit write
-    itself fails we log it and keep the pipeline's own exit code honest.
+    Observability must not become a new failure mode. Everything here —
+    including the import — is guarded, and `BaseException` is caught (not
+    just `Exception`) so that a `SystemExit` escaping the audit path can
+    never mask the pipeline's own error or exit code.
     """
+    if not run_id:
+        # The observability import failed at startup; nothing to record.
+        return
     try:
         from observability.run_log import RunRecord, append_run, git_sha, summarize
 
@@ -95,16 +100,24 @@ def _record_run(
         )
         log.info("run log appended: %s (%s)", RUN_LOG, status)
         log.info("run history (last 5):\n%s", summarize(RUN_LOG))
-    except Exception as exc:  # pragma: no cover - defensive
+    except BaseException as exc:  # pragma: no cover - defensive
         log.warning("run log write failed (non-fatal): %s", exc)
 
 
 def main() -> int:
     sys.path.insert(0, str(ROOT))
-    from observability.run_log import new_run_id, utc_now
 
-    run_id = new_run_id()
-    started_at = utc_now()
+    # Guarded: if the observability layer cannot even be imported, the
+    # pipeline still runs — it just runs without an audit row.
+    try:
+        from observability.run_log import new_run_id, utc_now
+
+        run_id = new_run_id()
+        started_at = utc_now()
+    except BaseException as exc:  # pragma: no cover - defensive
+        log.warning("run log unavailable (non-fatal): %s", exc)
+        run_id = ""
+        started_at = ""
     t0 = time.monotonic()
 
     api_key = os.environ.get("EVDS_API_KEY", "").strip()

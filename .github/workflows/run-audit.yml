@@ -1,14 +1,18 @@
 name: run-audit
 
-# Verifies the M12 observability layer: the audit-log contract, and that a
-# real pipeline execution actually writes a row. Kept in its own workflow so
-# it stays readable and can be dispatched on its own.
+# Verifies the M12 observability layer: the audit-log contract, that a real
+# pipeline execution actually writes a row, and — via fault injection — that
+# the audit layer never changes the pipeline's own exit code. Kept in its own
+# workflow so it stays readable and can be dispatched on its own.
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   run-audit:
@@ -51,3 +55,30 @@ jobs:
           print(f"RESULT: {'PASS' if ok else 'FAIL'}")
           sys.exit(0 if ok else 1)
           EOF
+
+      - name: Failure-path proof (fault injection)
+        run: python tests/test_run_log_failure_paths.py
+
+      - name: Independent read via DuckDB (not the writer's own reader)
+        run: |
+          python - <<'EOF'
+          import duckdb
+          rows = duckdb.connect().sql(
+              "select status, count(*) from 'warehouse/run_log.parquet' "
+              "group by 1 order by 1"
+          ).fetchall()
+          print("===== OTOMATIK KONTROL =====")
+          print(f"duckdb_status_counts: {rows}")
+          statuses = {r[0] for r in rows}
+          ok = "success" in statuses and "failure" in statuses
+          print(f"RESULT: {'PASS' if ok else 'FAIL'}")
+          raise SystemExit(0 if ok else 1)
+          EOF
+
+      - name: Upload the audit log as durable evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-log-parquet
+          path: warehouse/run_log.parquet
+          if-no-files-found: warn
