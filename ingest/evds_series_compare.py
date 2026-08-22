@@ -24,6 +24,8 @@ import urllib.parse
 import urllib.request
 from datetime import date
 
+# NOTE: EVDS 3 appends query parameters straight onto the base path — there is
+# no '?' separator. See ingest/evds_client.build_url and its unit test.
 BASE_URL = "https://evds3.tcmb.gov.tr/igmevdsms-dis/"
 START = "01-01-2015"
 CANDIDATES = ["TP.FG.J0", "TP.TUFE1YI.T1"]
@@ -49,7 +51,7 @@ def _url(series: str) -> str:
             "formulas": "0",
         }
     )
-    return f"{BASE_URL}?{query}"
+    return f"{BASE_URL}{query}"
 
 
 def fetch(series: str, key: str) -> dict[str, float]:
@@ -58,6 +60,9 @@ def fetch(series: str, key: str) -> dict[str, float]:
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        print(f"[{series}] request failed: HTTP {exc.code}")
+        return {}
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"[{series}] request failed: {type(exc).__name__}")
         return {}
@@ -103,6 +108,7 @@ def yoy(levels: dict[str, float]) -> dict[str, float]:
 def main() -> int:
     key = os.environ.get("EVDS_API_KEY", "").strip()
     print("===== EVDS SERIES COMPARISON =====")
+    print(f"start={START} end={_end()}")
     if not key:
         print("EVDS_API_KEY not set — skipping live comparison.")
         print("===== OTOMATIK KONTROL =====")
