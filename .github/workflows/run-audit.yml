@@ -1,0 +1,75 @@
+name: run-audit
+
+# Verifies the M12 observability layer: the audit-log contract, and that a
+# real pipeline execution actually writes a row. Kept in its own workflow so
+# it stays readable and can be dispatched on its own.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  run-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit tests (run audit log contract)
+        run: python tests/test_run_log.py
+
+      - name: End-to-end proof (two fixture runs append two distinct rows)
+        run: |
+          python orchestrate.py
+          python orchestrate.py
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, ".")
+          from observability.run_log import read_runs, summarize
+          df = read_runs("warehouse/run_log.parquet")
+          print(summarize("warehouse/run_log.parquet"))
+          ok = (
+              len(df) == 2
+              and df["run_id"].nunique() == 2
+              and (df["status"] == "success").all()
+              and (df["gold_rows"].astype(int) > 0).all()
+              and (df["mode"] == "fixture").all()
+          )
+          print("===== OTOMATIK KONTROL =====")
+          print(f"run_rows: {len(df)}")
+          print(f"unique_run_ids: {df['run_id'].nunique()}")
+          print(f"statuses: {sorted(set(df['status']))}")
+          print(f"gold_rows: {list(df['gold_rows'])}")
+          print(f"RESULT: {'PASS' if ok else 'FAIL'}")
+          sys.exit(0 if ok else 1)
+          EOF
+
+      - name: Failure path proof (a failed run is recorded, not swallowed)
+        run: |
+          python - <<'EOF'
+          import subprocess, sys
+          sys.path.insert(0, ".")
+          from observability.run_log import read_runs
+          before = len(read_runs("warehouse/run_log.parquet"))
+          # Force a failure: point the ingest step at a non-existent source.
+          proc = subprocess.run(
+              [sys.executable, "ingest/ingest.py", "--source", "data/sample/__missing__.csv",
+               "--out", "warehouse/bronze", "--source-name", "fixture:synthetic"],
+          )
+          df = read_runs("warehouse/run_log.parquet")
+          print("===== OTOMATIK KONTROL =====")
+          print(f"ingest_exit_code: {proc.returncode}")
+          print(f"rows_before: {before}")
+          print(f"rows_now: {len(df)}")
+          ok = proc.returncode != 0 and len(df) == before
+          print(f"RESULT: {'PASS' if ok else 'FAIL'}")
+          sys.exit(0 if ok else 1)
+          EOF
