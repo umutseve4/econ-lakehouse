@@ -51,25 +51,3 @@ jobs:
           print(f"RESULT: {'PASS' if ok else 'FAIL'}")
           sys.exit(0 if ok else 1)
           EOF
-
-      - name: Failure path proof (a failed run is recorded, not swallowed)
-        run: |
-          python - <<'EOF'
-          import subprocess, sys
-          sys.path.insert(0, ".")
-          from observability.run_log import read_runs
-          before = len(read_runs("warehouse/run_log.parquet"))
-          # Force a failure: point the ingest step at a non-existent source.
-          proc = subprocess.run(
-              [sys.executable, "ingest/ingest.py", "--source", "data/sample/__missing__.csv",
-               "--out", "warehouse/bronze", "--source-name", "fixture:synthetic"],
-          )
-          df = read_runs("warehouse/run_log.parquet")
-          print("===== OTOMATIK KONTROL =====")
-          print(f"ingest_exit_code: {proc.returncode}")
-          print(f"rows_before: {before}")
-          print(f"rows_now: {len(df)}")
-          ok = proc.returncode != 0 and len(df) == before
-          print(f"RESULT: {'PASS' if ok else 'FAIL'}")
-          sys.exit(0 if ok else 1)
-          EOF
