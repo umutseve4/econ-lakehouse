@@ -9,7 +9,7 @@ MAX_LAG_MONTHS = 3
 
 
 def _as_date(value: Any) -> date:
-    """Normalize date-like values without depending on pandas."""
+    """Normalize date-like values, including EVDS's unpadded YYYY-M format."""
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
@@ -18,8 +18,13 @@ def _as_date(value: Any) -> date:
         converted = value.date()
         if isinstance(converted, date):
             return converted
-    text = str(value).strip()[:10]
-    return date.fromisoformat(text)
+    text = str(value).strip().split()[0]
+    parts = text.split("-")
+    if len(parts) >= 2:
+        year, month = int(parts[0]), int(parts[1])
+        day = int(parts[2][:2]) if len(parts) >= 3 else 1
+        return date(year, month, day)
+    return date.fromisoformat(text[:10])
 
 
 def observation_lag_months(observed_on: Any, as_of: Any | None = None) -> int:

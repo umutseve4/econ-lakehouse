@@ -1,189 +1,145 @@
 # econ-lakehouse
 
 [![pipeline](https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml/badge.svg)](https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml)
+[![freshness-gate](https://github.com/umutseve4/econ-lakehouse/actions/workflows/freshness-gate.yml/badge.svg)](https://github.com/umutseve4/econ-lakehouse/actions/workflows/freshness-gate.yml)
 
-**Live demo:** [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/) — self-bootstrapping dashboard on live TCMB EVDS data.
+**Live demo:** [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/)
 
-Medallion-architecture data warehouse for Turkish macroeconomic data.
+A tested medallion-architecture warehouse for Turkish macroeconomic data. It turns API/CSV input into validated bronze Parquet, typed dbt silver models, analytical gold marts, a read-only API, and a Streamlit dashboard.
 
-**Problem:** CPI/macro data lives scattered across APIs and CSV dumps. Analytical
-SQL written directly against raw files is untyped, unvalidated, and
-unreproducible. This repo builds a small but real lakehouse: validated bronze
-Parquet, typed silver views, analytical gold marts — with data-quality gates at
-every layer and a CI pipeline that rebuilds everything from scratch on each push.
+> **Freshness notice (verified 2026-08-22):** the official production source `TP.FG.J0` currently ends at **2026-01**. The warehouse is live-source, but its newest CPI observation is not current. The dashboard now displays the exact observation date and lag instead of presenting the value as current. See [Data freshness policy](docs/data-freshness.md).
 
-## Architecture
+## Why this exists
 
+Analytical SQL written directly against raw files is untyped, unvalidated, and difficult to reproduce. This project makes the full path explicit and testable:
+
+```text
+TCMB EVDS / synthetic CI fixture
+        │  schema contract + idempotent ingest
+        ▼
+Bronze Parquet (partitioned, append-safe, provenance stamped)
+        │  dbt + DuckDB
+        ▼
+Silver typed/deduplicated views
+        │  dbt tests
+        ▼
+Gold mart_inflation_yoy
+        ├── FastAPI (read-only, parameterized)
+        └── Streamlit dashboard (provenance + freshness visible)
 ```
-CSV / API source
-      │  ingest/ingest.py  — schema contract validated BEFORE any write
-      ▼
-warehouse/bronze/cpi/year=YYYY/data.parquet     (append-only, partitioned)
-      │  dbt + DuckDB
-      ▼
-silver.stg_cpi           — typed, deduplicated view over the Parquet lake
-      │
-      ▼
-gold.mart_inflation_yoy  — year-over-year inflation per COICOP item
-```
 
-| Layer  | Tool | Quality gate |
-|--------|------|--------------|
-| Bronze | pandas + pyarrow | schema contract, positive values, no dupes, ISO dates, provenance stamp (source_name, fetched_at), idempotent upsert on (date, item_code) |
-| Silver | dbt view on DuckDB | `not_null` tests + singular uniqueness/positivity tests |
-| Gold   | dbt table | `not_null` on the YoY metric, non-empty check in CI |
+| Layer | Main tools | Enforced checks |
+|---|---|---|
+| Bronze | pandas, pyarrow, fsspec | schema, ISO dates, positive values, no duplicate `(date, item_code)`, provenance, idempotent upsert |
+| Silver | dbt, DuckDB | typing, `not_null`, uniqueness, positivity, latest-fetch deduplication |
+| Gold | dbt table | non-null YoY metric, non-empty mart, revision history |
+| Serving | FastAPI, Streamlit | read-only DB, parameterized SQL, response limits, provenance and freshness disclosure |
+| Operations | GitHub Actions, Docker, Dagster | clean rebuilds, remote-storage smoke, scheduled alerting, live freshness gate |
 
 ## Quickstart
 
 ```bash
 pip install -r requirements.txt
-python tests/test_ingest.py                                   # unit tests
-python orchestrate.py                                         # full pipeline (fixture mode)
-EVDS_API_KEY=... python orchestrate.py                        # full pipeline (live TCMB data)
+python tests/test_ingest.py
+python tests/test_freshness.py
+python orchestrate.py
+```
+
+Use official EVDS input only through an environment variable; never place the key in a URL, source file, log, or commit:
+
+```bash
+EVDS_API_KEY=... python orchestrate.py
 ```
 
 ### Docker
 
 ```bash
 docker build -t econ-lakehouse .
-docker run --rm econ-lakehouse                        # fixture mode
-docker run --rm -e EVDS_API_KEY=... econ-lakehouse    # live mode
+docker run --rm econ-lakehouse
+
+docker run --rm -e EVDS_API_KEY=... econ-lakehouse
 ```
 
-The container runs `orchestrate.py`: fetch → bronze ingest → idempotency
-proof → dbt build → gold sanity check, and exits non-zero on any failure.
+The single entrypoint performs fetch → bronze ingest → idempotency proof → dbt build → gold sanity check and exits non-zero on failure.
 
-### Serving API
+### API
 
 ```bash
 uvicorn serve.app:app --port 8000
-curl http://localhost:8000/health                          # {"status":"ok","gold_rows":N}
+curl http://localhost:8000/health
 curl 'http://localhost:8000/v1/inflation?year=2024&limit=5'
-curl http://localhost:8000/v1/inflation/latest             # newest observation per item
+curl http://localhost:8000/v1/inflation/latest
 ```
 
-Read-only FastAPI layer over the gold mart (`mart_inflation_yoy`). The
-warehouse is opened `read_only=True`, filters are fully parameterized, and
-`limit` is capped at 1000. Interactive docs at `/docs` (OpenAPI). Point it at
-another warehouse with `LAKE_DB=/path/to.duckdb`.
+The API opens DuckDB with `read_only=True`, uses parameterized filters, and caps `limit` at **1000**. OpenAPI documentation is available at `/docs`. Set `LAKE_DB=/path/to.duckdb` to use another warehouse.
 
-### DAG orchestration (Dagster)
+### Dashboard
+
+```bash
+streamlit run dashboard/app.py
+```
+
+The Streamlit app shows latest available YoY observations, an interactive time series, raw data, and CSV export. Data access is isolated in `dashboard/data.py`; freshness policy is pure/testable in `quality/freshness.py`. On cold start, `dashboard/bootstrap.py` invokes the same `orchestrate.py` pipeline used by CI and Docker. `warehouse/provenance.json` records fixture/live mode, source, UTC build time, and gold row count.
+
+### Dagster
 
 ```bash
 pip install dagster dagster-webserver
-dagster dev -f orchestration/definitions.py   # asset graph UI at localhost:3000
+dagster dev -f orchestration/definitions.py
 ```
 
-The pipeline is also expressed as a Dagster **asset graph**
-(`bronze_cpi → warehouse_marts`, plus a `gold_nonempty` asset check), with a
-`cpi_pipeline_job` and a weekly schedule mirroring the CI cron. Assets shell
-out to the same entrypoints CI verifies (`ingest/ingest.py`, `dbt build`), so
-orchestration adds lineage, retries, and observability without forking the
-pipeline logic. The idempotency proof runs inside the bronze asset on every
-materialization. CI materializes the whole graph in-process in fixture mode
-(`dagster-orchestration` job, `tests/test_dag.py`).
+The asset graph is `bronze_cpi → warehouse_marts` plus a `gold_nonempty` asset check. CI materializes it in-process; Dagster adds lineage, retries, scheduling, and observability without creating a second pipeline implementation.
 
-### Dashboard (Streamlit)
+## Data freshness: explicit limitation, not a silent series swap
 
-```bash
-pip install streamlit
-streamlit run dashboard/app.py            # UI at localhost:8501
-```
+The production mapping remains `TP.FG.J0 → CP00`. Live diagnostics proved that extending `endDate`, removing aggregation/formula parameters, and requesting the bare series all return the same non-null tail ending at **2026-01**. The freeze is upstream, not a parser or dbt defect.
 
-Interactive dashboard over the gold mart: latest YoY inflation per item
-(`st.metric`), filterable time-series chart, raw data table, CSV export.
-Presentation and data access are separated — every query lives in
-`dashboard/data.py` (read-only DuckDB connection, parameterized SQL) so the
-data layer is unit-tested independently of the UI. CI renders the whole app
-headlessly via Streamlit's `AppTest` against a fixture warehouse
-(`dashboard-smoke` job, `tests/test_dashboard.py`). Point it at another
-warehouse with `LAKE_DB=/path/to.duckdb`.
+A sweep tested **14 candidate series**. No series was both current and historically compatible. `TP.TUFE1YI.T1` reaches **2026-07**, but across **121 overlapping YoY months** its mean absolute difference from `TP.FG.J0` is **15.1540 percentage points** and its maximum difference is **72.1737 percentage points at 2022-10**. A simple index rebasing cannot cause that: the constant base factor cancels in the YoY ratio.
 
-### Deploy to Streamlit Community Cloud
+Therefore this repository does **not** splice a different methodology onto the old history. The implemented policy is:
 
-**Deployed:** [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/)
+- **0–3 calendar months:** fresh/pass.
+- **4+ calendar months:** stale/fail.
+- Dashboard: exact newest date, exact month lag, and prominent stale warning.
+- Every PR/push: deterministic `3`-month-pass and `4`-month-fail tests.
+- Weekly/manual live run: fetch `TP.FG.J0`, fail beyond **3 months**, and open one deduplicated `data-freshness` issue.
+- Future migration: require authoritative series metadata and full-history compatibility evidence, then rebuild the whole history and document the methodology break.
 
-The dashboard is self-bootstrapping: on a fresh container (no
-`warehouse/econ.duckdb`) it runs the full pipeline once via
-`dashboard/bootstrap.py` → `orchestrate.py` — live TCMB EVDS data when
-`EVDS_API_KEY` is configured, honestly-labeled synthetic fixture otherwise.
-Every build writes `warehouse/provenance.json` (`mode`, `source_name`,
-`built_at_utc`, `gold_rows`); the dashboard banner is driven by that file, and
-if a fixture-built warehouse is found while an API key IS available, bootstrap
-wipes it and rebuilds from live data (self-healing, `rebuilt-live`).
+Operational evidence and commands are documented in [docs/data-freshness.md](docs/data-freshness.md).
 
-1. Go to [share.streamlit.io](https://share.streamlit.io) → **New app** →
-   pick this repo, branch `main`, main file `dashboard/app.py`.
-2. In **Advanced settings → Secrets** add: `EVDS_API_KEY = "your-key"`.
-3. Deploy. First load takes ~1–2 min (pipeline cold start), then it's cached.
+## Data and storage
 
-### Scheduling & alerting
+`data/sample/cpi_fixture.csv` is synthetic and exists only for deterministic testing. It is **not** official statistics. Live mode uses TCMB EVDS. Bronze data can also target S3-compatible storage through an fsspec URI; CI verifies the path against a real MinIO service. dbt snapshots retain SCD Type 2 revision history when upstream values change.
 
-CI runs the full pipeline weekly (`cron: 17 6 * * 1`). If a **scheduled** run
-fails, the `alert-on-failure` job automatically opens a GitHub issue labeled
-`pipeline-failure` linking to the failing run — silent breakage (e.g. an
-upstream EVDS API change) surfaces without anyone watching CI.
+## CI and alerting
 
-## Data
+The main workflow rebuilds and verifies ingestion, dbt models/tests, idempotency, API, dashboard, Dagster, Docker, and S3-compatible storage. It runs weekly at `17 6 * * 1`; scheduled pipeline failures open a deduplicated `pipeline-failure` issue.
 
-`data/sample/cpi_fixture.csv` is a **synthetic fixture** shaped like TÜİK CPI
-sub-indices (COICOP codes CP00/CP01/CP07). It exists to exercise the pipeline
-deterministically; it is **not** real official statistics. In CI the pipeline
-switches to **real TCMB EVDS data** whenever the `EVDS_API_KEY` secret is set.
-Live mode currently ingests the headline index only (`TP.FG.J0` → CP00);
-sub-index EVDS codes are intentionally not guessed.
+The independent freshness workflow runs deterministic policy tests on code changes and the live gate weekly at `47 6 * * 1` or on manual dispatch. Keeping the live upstream check separate prevents a known external freeze from making unrelated pull requests unmergeable while still producing an operational failure signal.
 
-## Status (honest)
+## Verified status
 
-- **Verified locally:** bronze ingest — 12/12 unit tests + end-to-end run PASS.
-- **Verified in CI:** live EVDS (TCMB) fetch → bronze → dbt silver/gold build +
-  data-quality tests + idempotency proof (re-ingest changes no row counts).
-- **Provenance:** every bronze row carries `source_name` and `fetched_at`
-  (UTC, ISO-8601); silver resolves any residual duplicate by latest fetch; the
-  warehouse itself carries `warehouse/provenance.json` (fixture vs live, build
-  time, row count) written by `orchestrate.py`.
-- **Dockerized:** single-entrypoint `orchestrate.py`; image built and run
-  end-to-end in CI (`docker-smoke` job); scheduled-run failures auto-open a
-  GitHub issue.
-- **Remote storage:** bronze lake runs unchanged on S3-compatible object
-  storage via an fsspec URI (`--out s3://bucket/prefix`,
-  `LAKE_S3_ENDPOINT` for MinIO); verified end-to-end in CI against a real
-  MinIO container (`remote-storage` job).
-- **Late-revision history:** dbt snapshot (SCD Type 2, check strategy on
-  `index_value`) captures TCMB revisions as closed/open versions; a CI test
-  proves a revised value produces exactly one closed and one current version.
-- **Serving:** read-only FastAPI endpoints over the gold mart (`/health`,
-  `/v1/inflation`, `/v1/inflation/latest`); 13 fixture-based unit tests
-  (incl. SQL-injection and limit-validation checks) plus a CI smoke test
-  against the real pipeline-built warehouse.
-- **DAG orchestration:** Dagster asset graph (`bronze_cpi → warehouse_marts`
-  + `gold_nonempty` check) with job + weekly schedule; full in-process
-  materialization verified in CI (`dagster-orchestration` job).
-- **Dashboard:** Streamlit UI over the gold mart (metrics, filterable chart,
-  CSV export); data layer isolated in `dashboard/data.py` (read-only,
-  parameterized); 11 unit tests + headless `AppTest` render verified in CI
-  (`dashboard-smoke` job).
-- **Cloud-ready dashboard:** cold-start bootstrap (`dashboard/bootstrap.py`)
-  builds the warehouse on first request via the single-entrypoint pipeline;
-  8 stubbed unit tests (incl. self-healing rebuild contract) + a real
-  fixture-mode e2e bootstrap with provenance assertion verified in CI.
-- **Deployed & live-verified:** live on Streamlit Community Cloud at
-  [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/),
-  serving real TCMB EVDS data (CP00 headline CPI) with a provenance caption —
-  verified against the deployed app, not just CI.
+- Ingest: **12/12** unit tests plus end-to-end pipeline.
+- Serving API: **13** fixture-based tests, including SQL injection and limit validation.
+- Dashboard: **11** data/UI tests with a headless Streamlit `AppTest` render.
+- Bootstrap/provenance: **8** stubbed tests plus fixture-mode end-to-end build.
+- Freshness policy: exact boundary tests for **3 months = pass** and **4 months = fail**, CSV-tail detection, scheduled/manual live enforcement.
+- CI: Docker smoke, Dagster materialization, MinIO remote-storage path, dbt tests, idempotency proof, and revision-history proof.
+- Deployment: Streamlit Community Cloud is reachable and uses official EVDS input when the secret is configured; the newest observation may still be stale and is disclosed in-product.
 
 ## Milestones
 
-1. **M1 — vertical slice (done, CI-green):** fixture CSV → bronze → silver → gold, all gated.
-2. **M2 — real data (done, CI-green):** EVDS 3 API ingest, live fetch verified in CI.
-3. **M3 — incremental (done, CI-green):** provenance columns + idempotent upsert.
-4. **M4 — orchestration (done, CI-green):** Docker image + `orchestrate.py` entrypoint, weekly scheduled runs, auto-issue on scheduled failure.
-5. **M5 — durability (done, CI-green):** S3-compatible remote storage for bronze (fsspec + MinIO in CI), dbt snapshot for late revisions with an end-to-end revision test.
-6. **M6 — serving (done, CI-green):** read-only FastAPI over the gold mart, parameterized filters, fixture unit tests + real-warehouse smoke test in CI.
-7. **M7 — DAG orchestration (done, CI-green):** Dagster software-defined assets over the medallion flow, asset check on gold, job + weekly schedule, in-process materialization test in CI.
-8. **M8 — dashboard (done, CI-green):** Streamlit dashboard over the gold mart, isolated read-only data layer, fixture unit tests + headless AppTest render in CI.
-9. **M9 — cloud deploy (done, deployed):** self-bootstrapping dashboard live on Streamlit Community Cloud — cold-start warehouse build through `orchestrate.py`, secrets passthrough, honest fixture labeling, e2e bootstrap test in CI.
-10. **M10 — data provenance & self-healing deploy (done, live-verified):** `warehouse/provenance.json` written on every build; dashboard banner driven by provenance (fixture warning can never silently disappear); bootstrap detects a fixture warehouse + available API key and rebuilds from live data; verified on the deployed app showing real TCMB CPI.
+1. **M1 — vertical slice:** fixture → bronze → silver → gold, quality-gated.
+2. **M2 — real source:** EVDS 3 ingestion verified in CI.
+3. **M3 — incremental:** provenance and idempotent upsert.
+4. **M4 — operations:** Docker, single entrypoint, schedule, failure issue.
+5. **M5 — durability:** S3-compatible bronze and SCD Type 2 revisions.
+6. **M6 — serving:** read-only FastAPI with tested filters.
+7. **M7 — orchestration:** Dagster assets, check, job, schedule.
+8. **M8 — dashboard:** isolated query layer and headless UI test.
+9. **M9 — cloud deploy:** self-bootstrapping Streamlit deployment.
+10. **M10 — provenance/self-healing:** durable fixture/live provenance and live rebuild.
+11. **M11 — freshness controls:** upstream freeze proved, **14** alternatives rejected as unsafe, dashboard staleness surfaced, deterministic boundary tests and live operational gate implemented.
 
 ## License
 
