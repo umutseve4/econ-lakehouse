@@ -2,12 +2,15 @@
 
 [![pipeline](https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml/badge.svg)](https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml)
 [![freshness-gate](https://github.com/umutseve4/econ-lakehouse/actions/workflows/freshness-gate.yml/badge.svg)](https://github.com/umutseve4/econ-lakehouse/actions/workflows/freshness-gate.yml)
+[![run-audit](https://github.com/umutseve4/econ-lakehouse/actions/workflows/run-audit.yml/badge.svg)](https://github.com/umutseve4/econ-lakehouse/actions/workflows/run-audit.yml)
 
-**Live demo:** [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/)
+**Deployment URL:** [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/)
 
 A tested medallion-architecture warehouse for Turkish macroeconomic data. It turns API/CSV input into validated bronze Parquet, typed dbt silver models, analytical gold marts, a read-only API, and a Streamlit dashboard.
 
-> **Freshness notice (verified 2026-08-22):** the official production source `TP.FG.J0` currently ends at **2026-01**. The warehouse is live-source, but its newest CPI observation is not current. The dashboard now displays the exact observation date and lag instead of presenting the value as current. See [Data freshness policy](docs/data-freshness.md).
+> **Freshness notice (verified 2026-08-22):** the official production source `TP.FG.J0` currently ends at **2026-01**. The warehouse is live-source, but its newest CPI observation is not current. The dashboard is designed to display the exact observation date and lag instead of presenting the value as current. See [Data freshness policy](docs/data-freshness.md).
+
+> **Deployment evidence boundary:** the application URL is retained for portfolio access, but current reachability and the deployed commit SHA were not independently re-verified during the M12 closure. Deployment availability is therefore tracked separately from code and CI evidence.
 
 ## Why this exists
 
@@ -26,6 +29,9 @@ Silver typed/deduplicated views
 Gold mart_inflation_yoy
         ├── FastAPI (read-only, parameterized)
         └── Streamlit dashboard (provenance + freshness visible)
+
+Each orchestrated run
+        └── warehouse/run_log.parquet (append-only audit record)
 ```
 
 | Layer | Main tools | Enforced checks |
@@ -34,7 +40,7 @@ Gold mart_inflation_yoy
 | Silver | dbt, DuckDB | typing, `not_null`, uniqueness, positivity, latest-fetch deduplication |
 | Gold | dbt table | non-null YoY metric, non-empty mart, revision history |
 | Serving | FastAPI, Streamlit | read-only DB, parameterized SQL, response limits, provenance and freshness disclosure |
-| Operations | GitHub Actions, Docker, Dagster | clean rebuilds, remote-storage smoke, scheduled alerting, live freshness gate |
+| Operations | GitHub Actions, Docker, Dagster, Parquet audit log | clean rebuilds, remote-storage smoke, scheduled alerting, live freshness gate, one run record per orchestration attempt |
 
 ## Quickstart
 
@@ -117,15 +123,27 @@ The main workflow rebuilds and verifies ingestion, dbt models/tests, idempotency
 
 The independent freshness workflow runs deterministic policy tests on code changes and the live gate weekly at `47 6 * * 1` or on manual dispatch. Keeping the live upstream check separate prevents a known external freeze from making unrelated pull requests unmergeable while still producing an operational failure signal.
 
-## Verified status
+The independent run-audit workflow executes the fixture pipeline twice, checks for exactly **2 rows** and **2 unique `run_id` values**, exercises the failure path, reads the Parquet log with DuckDB, and uploads the audit artifact.
 
-- Ingest: **12/12** unit tests plus end-to-end pipeline.
-- Serving API: **13** fixture-based tests, including SQL injection and limit validation.
-- Dashboard: **11** data/UI tests with a headless Streamlit `AppTest` render.
-- Bootstrap/provenance: **8** stubbed tests plus fixture-mode end-to-end build.
-- Freshness policy: exact boundary tests for **3 months = pass** and **4 months = fail**, CSV-tail detection, scheduled/manual live enforcement.
-- CI: Docker smoke, Dagster materialization, MinIO remote-storage path, dbt tests, idempotency proof, and revision-history proof.
-- Deployment: Streamlit Community Cloud is reachable and uses official EVDS input when the secret is configured; the newest observation may still be stale and is disclosed in-product.
+## Run observability
+
+Every `orchestrate.py` attempt writes one append-only record to `warehouse/run_log.parquet` without changing the pipeline's original exit semantics. The record includes run identity and timing, success/failure state, mode and source, bronze/gold row counts, step totals, failed step, and Git SHA. Query examples, the schema contract, CI evidence, and concurrency limitations are documented in [docs/observability.md](docs/observability.md).
+
+This audit layer is intentionally local and single-writer: the current read-modify-write append is not atomic, concurrent runs can lose rows, and the audit history is not yet persisted to S3/MinIO. These limitations prevent a production-ready claim.
+
+## Evidence status
+
+- Ingest: **tested** — **12/12** unit tests plus end-to-end pipeline.
+- Serving API: **tested** — **13** fixture-based tests, including SQL injection and limit validation.
+- Dashboard: **tested** — **11** data/UI tests with a headless Streamlit `AppTest` render.
+- Bootstrap/provenance: **tested** — **8** stubbed tests plus fixture-mode end-to-end build.
+- Freshness policy: **tested** — exact boundary tests for **3 months = pass** and **4 months = fail**, CSV-tail detection, and scheduled/manual live enforcement code.
+- Run audit: **implemented and PR-tested** — append-only Parquet history, success/failure paths, independent DuckDB read, and artifact contract. Operational concurrent-write durability is not implemented.
+- PR #14: **merged** — squash merge SHA `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`; that SHA was verified as `main` HEAD during closure.
+- Post-merge `main` CI for `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`: **unverified during closure**; PR-head checks are not treated as merge-commit checks.
+- Freshness issue deduplication: **implemented, operationally unverified** — a two-run manual proof is still required.
+- Deployment: **historically configured, currently unverified during M12 closure** — current reachability and deployed SHA require separate evidence.
+- Production-ready: **not claimed**.
 
 ## Milestones
 
@@ -137,9 +155,10 @@ The independent freshness workflow runs deterministic policy tests on code chang
 6. **M6 — serving:** read-only FastAPI with tested filters.
 7. **M7 — orchestration:** Dagster assets, check, job, schedule.
 8. **M8 — dashboard:** isolated query layer and headless UI test.
-9. **M9 — cloud deploy:** self-bootstrapping Streamlit deployment.
+9. **M9 — cloud deploy:** self-bootstrapping Streamlit deployment implementation.
 10. **M10 — provenance/self-healing:** durable fixture/live provenance and live rebuild.
 11. **M11 — freshness controls:** upstream freeze proved, **14** alternatives rejected as unsafe, dashboard staleness surfaced, deterministic boundary tests and live operational gate implemented.
+12. **M12 — pipeline run audit:** append-only Parquet run ledger, success/failure capture, DuckDB-readable evidence, CI artifact, and documented concurrency/durability limits.
 
 ## License
 
