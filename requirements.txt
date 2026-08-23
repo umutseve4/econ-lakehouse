@@ -1,7 +1,7 @@
 pandas>=2.2
 pyarrow>=15
 duckdb>=1.0
-dbt-duckdb>=1.8
+dbt-duckdb>=1.11.0
 fsspec>=2024.1
 s3fs>=2026.7.0
 fastapi>=0.110
