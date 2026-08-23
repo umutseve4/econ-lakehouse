@@ -1,11 +1,11 @@
 pandas>=2.2
 pyarrow>=15
 duckdb>=1.0
-dbt-duckdb>=1.11.0
+dbt-duckdb>=1.8
 fsspec>=2024.1
-s3fs>=2026.7.0
+s3fs>=2024.1
 fastapi>=0.110
-uvicorn>=0.52.4
+uvicorn>=0.29
 httpx>=0.27
-dagster>=1.13.18
+dagster>=1.7
 streamlit>=1.61.1
