@@ -7,13 +7,26 @@ on:
   schedule:
     - cron: "47 6 * * 1"  # after the main Monday pipeline
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Live check or isolated lifecycle rehearsal"
+        required: true
+        default: live
+        type: choice
+        options:
+          - live
+          - simulate-freshness
+          - simulate-infrastructure
+          - simulate-recovery
 
 permissions:
   contents: read
 
+# Every route that can mutate this monitor's issue state shares one lock.
+# cancel-in-progress stays false so a manual rehearsal cannot cancel a schedule.
 concurrency:
-  group: freshness-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: freshness-gate-TP.FG.J0-lifecycle
+  cancel-in-progress: false
 
 jobs:
   policy-tests:
@@ -60,7 +73,22 @@ jobs:
       - id: install
         name: Install live-gate runtime dependency
         run: python -m pip install "pandas>=2.2"
+      - id: validate
+        name: Validate event and scenario routing
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_SCENARIO: ${{ inputs.scenario }}
+        run: |
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            [ -z "$REQUESTED_SCENARIO" ] || [ "$REQUESTED_SCENARIO" = "live" ]
+            exit
+          fi
+          case "$REQUESTED_SCENARIO" in
+            live|simulate-freshness|simulate-infrastructure|simulate-recovery) ;;
+            *) echo "Unsupported or empty dispatch scenario"; exit 1 ;;
+          esac
       - id: credential
+        if: github.event_name == 'schedule' || inputs.scenario == 'live'
         name: Require EVDS credential
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
@@ -72,32 +100,67 @@ jobs:
             exit 1
           fi
       - id: fetch
+        if: github.event_name == 'schedule' || inputs.scenario == 'live'
         name: Fetch production CPI series
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         run: python ingest/evds_client.py --series TP.FG.J0 --start 2015-01 --out data/evds/cpi_evds.csv
+      - id: simulate
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario != 'live'
+        name: Build isolated lifecycle fixture
+        env:
+          SCENARIO: ${{ inputs.scenario }}
+        run: |
+          mkdir -p data/evds
+          case "$SCENARIO" in
+            simulate-freshness)
+              printf 'date,value\n2000-01-01,1\n' > data/evds/cpi_evds.csv
+              ;;
+            simulate-recovery)
+              printf 'date,value\n%s,1\n' "$(date -u +%Y-%m-01)" > data/evds/cpi_evds.csv
+              ;;
+            simulate-infrastructure)
+              echo "Controlled infrastructure failure; no credential was read."
+              exit 1
+              ;;
+            *) exit 1 ;;
+          esac
       - id: enforce
+        if: >-
+          (github.event_name == 'schedule' || inputs.scenario == 'live' ||
+          inputs.scenario == 'simulate-freshness' || inputs.scenario == 'simulate-recovery')
+          && steps.validate.outcome == 'success'
+          && (steps.fetch.outcome == 'success' || steps.simulate.outcome == 'success')
         name: Enforce maximum 3-month observation lag
         run: python ingest/freshness_gate.py --csv data/evds/cpi_evds.csv --max-lag-months 3
       - id: classify
         name: Classify live-gate outcome
         if: always()
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCENARIO: ${{ inputs.scenario }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
           REVISION_OUTCOME: ${{ steps.revision.outcome }}
           PYTHON_OUTCOME: ${{ steps.python.outcome }}
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          VALIDATE_OUTCOME: ${{ steps.validate.outcome }}
           CREDENTIAL_OUTCOME: ${{ steps.credential.outcome }}
           FETCH_OUTCOME: ${{ steps.fetch.outcome }}
+          SIMULATE_OUTCOME: ${{ steps.simulate.outcome }}
           ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
         run: |
-          prior="$CHECKOUT_OUTCOME $REVISION_OUTCOME $PYTHON_OUTCOME $INSTALL_OUTCOME $CREDENTIAL_OUTCOME $FETCH_OUTCOME"
-          if [ "$prior" = "success success success success success success" ] && [ "$ENFORCE_OUTCOME" = "failure" ]; then
-            kind="freshness"
-          elif [ "$prior" = "success success success success success success" ] && [ "$ENFORCE_OUTCOME" = "success" ]; then
-            kind="none"
-          else
-            kind="infrastructure"
+          base="$CHECKOUT_OUTCOME $REVISION_OUTCOME $PYTHON_OUTCOME $INSTALL_OUTCOME $VALIDATE_OUTCOME"
+          if [ "$EVENT_NAME" = "schedule" ]; then SCENARIO="live"; fi
+          kind="infrastructure"
+          if [ "$base" = "success success success success success" ]; then
+            if [ "$SCENARIO" = "live" ] && [ "$CREDENTIAL_OUTCOME $FETCH_OUTCOME" = "success success" ]; then
+              [ "$ENFORCE_OUTCOME" = "failure" ] && kind="freshness"
+              [ "$ENFORCE_OUTCOME" = "success" ] && kind="none"
+            elif [ "$SCENARIO" = "simulate-freshness" ] && [ "$SIMULATE_OUTCOME" = "success" ] && [ "$ENFORCE_OUTCOME" = "failure" ]; then
+              kind="freshness"
+            elif [ "$SCENARIO" = "simulate-recovery" ] && [ "$SIMULATE_OUTCOME" = "success" ] && [ "$ENFORCE_OUTCOME" = "success" ]; then
+              kind="none"
+            fi
           fi
           echo "failure_kind=$kind" >> "$GITHUB_OUTPUT"
           echo "live_gate_failure_kind: $kind"
@@ -119,39 +182,37 @@ jobs:
       issues: write
     steps:
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SCENARIO: ${{ github.event_name == 'schedule' && 'live' || inputs.scenario }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         with:
           script: |
+            const simulated = process.env.SCENARIO === 'simulate-freshness';
+            const namespace = simulated ? 'simulation' : 'production';
+            const title = simulated ? '[TEST] Data freshness gate failed — TP.FG.J0' : 'Data freshness gate failed — TP.FG.J0';
+            const marker = simulated ? '<!-- freshness-gate-test:TP.FG.J0 -->' : '<!-- freshness-gate:TP.FG.J0 -->';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const title = 'Data freshness gate failed — TP.FG.J0';
-            const marker = '<!-- freshness-gate:TP.FG.J0 -->';
-            const open = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'data-freshness',
-              per_page: 100,
-            });
-            const existing = open.find(issue => issue.body?.includes(marker) || issue.title === title);
+            const attempt = Number(process.env.RUN_ATTEMPT);
+            const observation = `<!-- freshness-gate-observation:${namespace}:${context.runId}:${attempt} -->`;
+            const isNewer = (id, value) => BigInt(id) > BigInt(context.runId) || (BigInt(id) === BigInt(context.runId) && Number(value) > attempt);
+            const observations = async issue => {
+              const comments = await github.paginate(github.rest.issues.listComments, {owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, per_page: 100});
+              return [issue.body || '', ...comments.map(comment => comment.body || '')].flatMap(body => [...body.matchAll(/<!-- freshness-gate-observation:([^:]+):(\d+):(\d+) -->/g)]);
+            };
+            const open = await github.paginate(github.rest.issues.listForRepo, {owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100});
+            const existing = open.filter(issue => !issue.pull_request).find(issue => issue.body?.includes(marker) || (!simulated && issue.title === title));
             if (existing) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existing.number,
-                body: `Freshness failure reproduced.\n\nRun: ${runUrl}`,
-              });
+              const seen = await observations(existing);
+              if (seen.some(match => match[1] === namespace && isNewer(match[2], match[3]))) return;
+              if (seen.some(match => match[1] === namespace && match[2] === String(context.runId) && Number(match[3]) === attempt)) return;
+              await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body: `${observation}\nFreshness failure reproduced.\n\nRun: ${runUrl}`});
             } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                labels: ['data-freshness'],
-                body: `${marker}\nThe production CPI source exceeded the 3-month freshness limit.\n\nRun: ${runUrl}\n\nDo not silently substitute another series; verify its identity and YoY compatibility first.`,
-              });
+              await github.rest.issues.create({owner: context.repo.owner, repo: context.repo.repo, title, ...(simulated ? {} : {labels: ['data-freshness']}), body: `${marker}\n${observation}\n${simulated ? 'Controlled stale-data lifecycle rehearsal.' : 'The production CPI source exceeded the 3-month freshness limit.'}\n\nRun: ${runUrl}\n\nDo not silently substitute another series; verify its identity and YoY compatibility first.`});
             }
 
   alert-on-live-infrastructure-failure:
     needs: [live-gate]
-    if: always() && needs.live-gate.result == 'failure' && needs.live-gate.outputs.failure_kind != 'freshness' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: always() && needs.live-gate.result == 'failure' && needs.live-gate.outputs.failure_kind == 'infrastructure' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -159,37 +220,34 @@ jobs:
       issues: write
     steps:
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SCENARIO: ${{ github.event_name == 'schedule' && 'live' || inputs.scenario }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         with:
           script: |
+            const simulated = process.env.SCENARIO === 'simulate-infrastructure';
+            const namespace = simulated ? 'simulation-infrastructure' : 'production-infrastructure';
+            const title = simulated ? '[TEST] Freshness gate infrastructure failed — TP.FG.J0' : 'Freshness gate infrastructure failed — TP.FG.J0';
+            const marker = simulated ? '<!-- freshness-gate-infrastructure-test:TP.FG.J0 -->' : '<!-- freshness-gate-infrastructure:TP.FG.J0 -->';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const title = 'Freshness gate infrastructure failed — TP.FG.J0';
-            const marker = '<!-- freshness-gate-infrastructure:TP.FG.J0 -->';
-            const open = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              per_page: 100,
-            });
-            const existing = open.find(issue => issue.body?.includes(marker) || issue.title === title);
+            const attempt = Number(process.env.RUN_ATTEMPT);
+            const observation = `<!-- freshness-gate-observation:${namespace}:${context.runId}:${attempt} -->`;
+            const isNewer = (id, value) => BigInt(id) > BigInt(context.runId) || (BigInt(id) === BigInt(context.runId) && Number(value) > attempt);
+            const open = await github.paginate(github.rest.issues.listForRepo, {owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100});
+            const existing = open.filter(issue => !issue.pull_request).find(issue => issue.body?.includes(marker) || (!simulated && issue.title === title));
             if (existing) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: existing.number,
-                body: `Infrastructure/bootstrap failure reproduced.\n\nRun: ${runUrl}`,
-              });
+              const comments = await github.paginate(github.rest.issues.listComments, {owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, per_page: 100});
+              const seen = [existing.body || '', ...comments.map(comment => comment.body || '')].flatMap(body => [...body.matchAll(/<!-- freshness-gate-observation:([^:]+):(\d+):(\d+) -->/g)]);
+              if (seen.some(match => match[1] === namespace && isNewer(match[2], match[3]))) return;
+              if (seen.some(match => match[1] === namespace && match[2] === String(context.runId) && Number(match[3]) === attempt)) return;
+              await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body: `${observation}\nInfrastructure/bootstrap failure reproduced.\n\nRun: ${runUrl}`});
             } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body: `${marker}\nThe live freshness gate failed before a valid freshness-policy verdict was produced.\n\nRun: ${runUrl}\n\nInspect checkout, revision, Python setup, dependency installation, credential, and EVDS fetch steps.`,
-              });
+              await github.rest.issues.create({owner: context.repo.owner, repo: context.repo.repo, title, body: `${marker}\n${observation}\n${simulated ? 'Controlled infrastructure lifecycle rehearsal; no EVDS credential was read.' : 'The live freshness gate failed before a valid freshness-policy verdict was produced.'}\n\nRun: ${runUrl}\n\nInspect checkout, revision, Python setup, dependency installation, credential, and EVDS fetch steps.`});
             }
 
   resolve-on-live-success:
     needs: [live-gate]
-    if: always() && needs.live-gate.result == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: always() && needs.live-gate.result == 'success' && needs.live-gate.outputs.failure_kind == 'none' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -197,29 +255,26 @@ jobs:
       issues: write
     steps:
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SCENARIO: ${{ github.event_name == 'schedule' && 'live' || inputs.scenario }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         with:
           script: |
+            const simulated = process.env.SCENARIO === 'simulate-recovery';
+            const namespace = simulated ? 'simulation' : 'production';
+            const title = simulated ? '[TEST] Data freshness gate failed — TP.FG.J0' : 'Data freshness gate failed — TP.FG.J0';
+            const marker = simulated ? '<!-- freshness-gate-test:TP.FG.J0 -->' : '<!-- freshness-gate:TP.FG.J0 -->';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const marker = '<!-- freshness-gate:TP.FG.J0 -->';
-            const open = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'data-freshness',
-              per_page: 100,
-            });
-            for (const issue of open.filter(item => item.body?.includes(marker))) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                body: `Freshness gate recovered.\n\nRun: ${runUrl}`,
-              });
-              await github.rest.issues.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                state: 'closed',
-                state_reason: 'completed',
-              });
+            const attempt = Number(process.env.RUN_ATTEMPT);
+            const observation = `<!-- freshness-gate-observation:${namespace}:${context.runId}:${attempt} -->`;
+            const isNewer = (id, value) => BigInt(id) > BigInt(context.runId) || (BigInt(id) === BigInt(context.runId) && Number(value) > attempt);
+            const open = await github.paginate(github.rest.issues.listForRepo, {owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100});
+            const matches = open.filter(issue => !issue.pull_request && (issue.body?.includes(marker) || (!simulated && issue.title === title)));
+            for (const issue of matches) {
+              const comments = await github.paginate(github.rest.issues.listComments, {owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, per_page: 100});
+              const seen = [issue.body || '', ...comments.map(comment => comment.body || '')].flatMap(body => [...body.matchAll(/<!-- freshness-gate-observation:([^:]+):(\d+):(\d+) -->/g)]);
+              if (seen.some(match => match[1] === namespace && isNewer(match[2], match[3]))) continue;
+              if (seen.some(match => match[1] === namespace && match[2] === String(context.runId) && Number(match[3]) === attempt)) continue;
+              await github.rest.issues.createComment({owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, body: `${observation}\nFreshness gate recovered.\n\nRun: ${runUrl}`});
+              await github.rest.issues.update({owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number, state: 'closed', state_reason: 'completed'});
             }
