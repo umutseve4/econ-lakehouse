@@ -19,9 +19,6 @@ jobs:
   ingest-and-transform:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      pull-requests: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -129,40 +126,17 @@ jobs:
           print(f"RESULT: {'PASS' if lag <= 3 else 'WARN (stale beyond 3 months)'}")
           EOF
 
-      - name: Publish diagnostics back onto the pull request
-        if: github.event_name == 'pull_request'
+      - name: Package pull-request diagnostics
+        if: always() && github.event_name == 'pull_request'
         continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          script: |
-            const fs = require('fs');
-            const read = (path) => {
-              try {
-                return fs.readFileSync(path, 'utf8')
-                  .replace(/\r/g, '')
-                  .slice(0, 55000)
-                  .split('\n')
-                  .map((line) => `    ${line}`)
-                  .join('\n');
-              } catch (error) {
-                return `    (no output captured: ${path})`;
-              }
-            };
-            const body = [
-              '## M11 diagnostics (automated)',
-              '',
-              '### EVDS freshness probe',
-              read('/tmp/freshness.txt'),
-              '',
-              '### Gold mart lag',
-              read('/tmp/goldlag.txt'),
-            ].join('\n').slice(0, 65000);
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body,
-            });
+          name: pipeline-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            /tmp/freshness.txt
+            /tmp/goldlag.txt
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Snapshot test (late-revision history, SCD Type 2)
         env:
@@ -195,7 +169,75 @@ jobs:
             echo "RESULT: FAIL"; exit 1
           fi
 
+  publish-pr-diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: ingest-and-transform
+    if: always() && github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download diagnostics from the unprivileged runner
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pipeline-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
+          path: diagnostics
+
+      - name: Publish bounded diagnostics onto the pull request
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const MAX_SECTION = 30000;
+            const TRUNCATED = '    ... [truncated]\n';
+            const format = (raw) => {
+              const normalized = raw.replace(/\r/g, '');
+              let output = '';
+              for (const line of normalized.split('\n')) {
+                const candidate = `    ${line}\n`;
+                if (output.length + candidate.length > MAX_SECTION - TRUNCATED.length) {
+                  output += TRUNCATED;
+                  break;
+                }
+                output += candidate;
+              }
+              return output;
+            };
+            const read = (file) => {
+              try { return format(fs.readFileSync(path.join('diagnostics', file), 'utf8')); }
+              catch (error) { return `    (no output captured: ${file})\n`; }
+            };
+            const stress = format('x\n'.repeat(55000));
+            if (stress.length > MAX_SECTION || !stress.includes('[truncated]')) {
+              throw new Error('diagnostic formatter boundary check failed');
+            }
+            const body = [
+              '## M11 diagnostics (automated)',
+              '',
+              '### EVDS freshness probe',
+              read('freshness.txt'),
+              '',
+              '### Gold mart lag',
+              read('goldlag.txt'),
+            ].join('\n');
+            if (body.length > 65000 || !body.includes('### Gold mart lag')) {
+              throw new Error('diagnostic body boundary check failed');
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });
+
   dashboard-smoke:
+    # Dashboard data layer unit tests + headless Streamlit AppTest render
+    # over a fixture warehouse — proves the UI code path executes without
+    # exceptions on a clean checkout.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -234,6 +276,8 @@ jobs:
           EOF
 
   dagster-orchestration:
+    # Materializes the full asset graph (bronze -> marts + checks) in-process
+    # on a clean checkout, in deterministic fixture mode (no EVDS secret).
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -254,6 +298,9 @@ jobs:
         run: python tests/test_dag.py
 
   remote-storage:
+    # Proves the bronze lake runs unchanged on S3-compatible object storage.
+    # MinIO is throwaway (lives only for this job), so hardcoded creds here
+    # are ephemeral test fixtures, not secrets.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -313,6 +360,8 @@ jobs:
           fi
 
   alert-on-failure:
+    # Opens a GitHub issue when a scheduled run fails, so silent breakage
+    # (e.g. an upstream EVDS API change) surfaces without anyone watching CI.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [ingest-and-transform, docker-smoke, remote-storage, dagster-orchestration, dashboard-smoke]
