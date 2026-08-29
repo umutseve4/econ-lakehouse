@@ -50,6 +50,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - name: Install live-gate runtime dependency
+        run: python -m pip install "pandas>=2.2"
       - name: Require EVDS credential
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
