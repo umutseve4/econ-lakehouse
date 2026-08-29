@@ -8,16 +8,32 @@ on:
     - cron: "17 6 * * 1"  # weekly rehearsal run, Monday 06:17 UTC
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ingest-and-transform:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -51,8 +67,7 @@ jobs:
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         continue-on-error: true
-        run: |
-          python ingest/evds_freshness.py 2>&1 | tee /tmp/freshness.txt
+        run: python ingest/evds_freshness.py 2>&1 | tee /tmp/freshness.txt
 
       - name: Ingest -> bronze (Parquet)
         run: python ingest/ingest.py --source "$SOURCE_CSV" --out warehouse/bronze --source-name "$SOURCE_NAME"
@@ -117,27 +132,31 @@ jobs:
       - name: Publish diagnostics back onto the pull request
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const fs = require('fs');
-            const read = (p) => {
-              try { return fs.readFileSync(p, 'utf8').slice(0, 55000); }
-              catch (e) { return `(no output captured: ${p})`; }
+            const read = (path) => {
+              try {
+                return fs.readFileSync(path, 'utf8')
+                  .replace(/\r/g, '')
+                  .slice(0, 55000)
+                  .split('\n')
+                  .map((line) => `    ${line}`)
+                  .join('\n');
+              } catch (error) {
+                return `    (no output captured: ${path})`;
+              }
             };
             const body = [
               '## M11 diagnostics (automated)',
               '',
               '### EVDS freshness probe',
-              '```',
               read('/tmp/freshness.txt'),
-              '```',
               '',
               '### Gold mart lag',
-              '```',
               read('/tmp/goldlag.txt'),
-              '```',
-            ].join('\n');
+            ].join('\n').slice(0, 65000);
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -177,26 +196,26 @@ jobs:
           fi
 
   dashboard-smoke:
-    # Dashboard data layer unit tests + headless Streamlit AppTest render
-    # over a fixture warehouse — proves the UI code path executes without
-    # exceptions on a clean checkout.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Dashboard tests (data layer + AppTest, fixture warehouse)
         run: python tests/test_dashboard.py
-
       - name: Bootstrap unit tests (subprocess stubbed)
         run: python tests/test_bootstrap.py
-
       - name: Cold-start bootstrap e2e (fixture mode, real pipeline)
         run: |
           python - <<'EOF'
@@ -215,44 +234,48 @@ jobs:
           EOF
 
   dagster-orchestration:
-    # Materializes the full asset graph (bronze -> marts + checks) in-process
-    # on a clean checkout, in deterministic fixture mode (no EVDS secret).
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Dagster DAG test (asset graph + in-process materialization)
         run: python tests/test_dag.py
 
   remote-storage:
-    # Proves the bronze lake runs unchanged on S3-compatible object storage.
-    # MinIO is throwaway (lives only for this job), so hardcoded creds here
-    # are ephemeral test fixtures, not secrets.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Start MinIO (S3-compatible object storage)
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=lakeadmin \
             -e MINIO_ROOT_PASSWORD=lakesecret123 \
             quay.io/minio/minio server /data
-
       - name: Remote storage end-to-end test
         env:
           LAKE_S3_ENDPOINT: http://localhost:9000
@@ -262,18 +285,23 @@ jobs:
 
   docker-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Build image
         run: docker build -t econ-lakehouse .
-
       - name: Report image size
         run: |
           echo "===== OTOMATIK KONTROL ====="
           docker image inspect econ-lakehouse --format 'image_size_mb: {{.Size}}' \
             | awk -F': ' '{printf "image_size_mb: %.0f\n", $2/1024/1024}'
-
       - name: Run container end-to-end (live if secret set, else fixture)
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
@@ -285,15 +313,15 @@ jobs:
           fi
 
   alert-on-failure:
-    # Opens a GitHub issue when a scheduled run fails, so silent breakage
-    # (e.g. an upstream EVDS API change) surfaces without anyone watching CI.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [ingest-and-transform, docker-smoke, remote-storage, dagster-orchestration, dashboard-smoke]
     if: failure() && github.event_name == 'schedule'
     permissions:
+      contents: read
       issues: write
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
