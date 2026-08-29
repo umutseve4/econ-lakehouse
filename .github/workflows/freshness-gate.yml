@@ -32,27 +32,36 @@ jobs:
         with:
           python-version: "3.12"
       - name: Freshness policy boundary tests (offline)
-        run: python tests/test_freshness.py
+        run: |
+          python tests/test_freshness.py
+          python tests/test_freshness_workflow.py
 
   live-gate:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      failure_kind: ${{ steps.classify.outputs.failure_kind }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - id: checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - name: Assert exact event revision
+      - id: revision
+        name: Assert exact event revision
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - id: python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install live-gate runtime dependency
+      - id: install
+        name: Install live-gate runtime dependency
         run: python -m pip install "pandas>=2.2"
-      - name: Require EVDS credential
+      - id: credential
+        name: Require EVDS credential
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         run: |
@@ -62,16 +71,47 @@ jobs:
             echo "RESULT: FAIL"
             exit 1
           fi
-      - name: Fetch production CPI series
+      - id: fetch
+        name: Fetch production CPI series
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         run: python ingest/evds_client.py --series TP.FG.J0 --start 2015-01 --out data/evds/cpi_evds.csv
-      - name: Enforce maximum 3-month observation lag
+      - id: enforce
+        name: Enforce maximum 3-month observation lag
         run: python ingest/freshness_gate.py --csv data/evds/cpi_evds.csv --max-lag-months 3
+      - id: classify
+        name: Classify live-gate outcome
+        if: always()
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          REVISION_OUTCOME: ${{ steps.revision.outcome }}
+          PYTHON_OUTCOME: ${{ steps.python.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          CREDENTIAL_OUTCOME: ${{ steps.credential.outcome }}
+          FETCH_OUTCOME: ${{ steps.fetch.outcome }}
+          ENFORCE_OUTCOME: ${{ steps.enforce.outcome }}
+        run: |
+          prior="$CHECKOUT_OUTCOME $REVISION_OUTCOME $PYTHON_OUTCOME $INSTALL_OUTCOME $CREDENTIAL_OUTCOME $FETCH_OUTCOME"
+          if [ "$prior" = "success success success success success success" ] && [ "$ENFORCE_OUTCOME" = "failure" ]; then
+            kind="freshness"
+          elif [ "$prior" = "success success success success success success" ] && [ "$ENFORCE_OUTCOME" = "success" ]; then
+            kind="none"
+          else
+            kind="infrastructure"
+          fi
+          echo "failure_kind=$kind" >> "$GITHUB_OUTPUT"
+          echo "live_gate_failure_kind: $kind"
+      - name: Preserve fail-closed job status
+        if: always() && steps.classify.outputs.failure_kind != 'none'
+        env:
+          FAILURE_KIND: ${{ steps.classify.outputs.failure_kind }}
+        run: |
+          echo "Live gate failed: $FAILURE_KIND"
+          exit 1
 
   alert-on-live-failure:
     needs: [live-gate]
-    if: failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: always() && needs.live-gate.result == 'failure' && needs.live-gate.outputs.failure_kind == 'freshness' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -91,12 +131,95 @@ jobs:
               labels: 'data-freshness',
               per_page: 100,
             });
-            if (!open.some(issue => issue.title === title)) {
+            const existing = open.find(issue => issue.body?.includes(marker) || issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Freshness failure reproduced.\n\nRun: ${runUrl}`,
+              });
+            } else {
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 title,
                 labels: ['data-freshness'],
                 body: `${marker}\nThe production CPI source exceeded the 3-month freshness limit.\n\nRun: ${runUrl}\n\nDo not silently substitute another series; verify its identity and YoY compatibility first.`,
+              });
+            }
+
+  alert-on-live-infrastructure-failure:
+    needs: [live-gate]
+    if: always() && needs.live-gate.result == 'failure' && needs.live-gate.outputs.failure_kind != 'freshness' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = 'Freshness gate infrastructure failed — TP.FG.J0';
+            const marker = '<!-- freshness-gate-infrastructure:TP.FG.J0 -->';
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = open.find(issue => issue.body?.includes(marker) || issue.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Infrastructure/bootstrap failure reproduced.\n\nRun: ${runUrl}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body: `${marker}\nThe live freshness gate failed before a valid freshness-policy verdict was produced.\n\nRun: ${runUrl}\n\nInspect checkout, revision, Python setup, dependency installation, credential, and EVDS fetch steps.`,
+              });
+            }
+
+  resolve-on-live-success:
+    needs: [live-gate]
+    if: always() && needs.live-gate.result == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const marker = '<!-- freshness-gate:TP.FG.J0 -->';
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'data-freshness',
+              per_page: 100,
+            });
+            for (const issue of open.filter(item => item.body?.includes(marker))) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Freshness gate recovered.\n\nRun: ${runUrl}`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+                state_reason: 'completed',
               });
             }
