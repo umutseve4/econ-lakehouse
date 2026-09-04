@@ -128,13 +128,29 @@ The independent freshness workflow runs deterministic policy tests on code chang
 
 The independent run-audit workflow runs the contract, failure-path, and concurrency test modules, executes the fixture pipeline twice, then reads the result back with DuckDB from both the derived snapshot and the `run_log_parts/*.parquet` glob — asserting that no `run_id` appears twice, that the schema contract holds, and that the snapshot row count equals the parts row count. Both the snapshot and the parts directory are uploaded as the audit artifact.
 
+The evidence workflow runs daily at `23 5 * * *` and on manual dispatch. It restores the run ledger from the `evidence` branch, executes the fixture pipeline, appends this run's part file back to that branch, renders a static status page from the ledger, and publishes it. A failed pipeline run is still recorded and still published — the page shows `FAILING` — and the workflow reports failure only afterwards, so a broken pipeline can never produce a green run *and* a silent page. On pull requests the workflow only tests the renderer: it never writes to the ledger branch and never deploys.
+
 ## Run observability
 
 Every `orchestrate.py` attempt writes one append-only record without changing the pipeline's original exit semantics. The record includes run identity and timing, success/failure state, mode and source, bronze/gold row counts, step totals, failed step, and Git SHA. Query examples, the schema contract, and CI evidence are documented in [docs/observability.md](docs/observability.md).
 
 Each run writes its **own** part file under `warehouse/run_log_parts/` through a temporary file and an atomic `os.replace`, so no run reads or rewrites another run's data. `warehouse/run_log.parquet` is a derived snapshot rebuilt from those parts, kept so the documented DuckDB one-liner and the CI artifact contract are unchanged; it can be regenerated at any time with `compact()`.
 
-This replaces the earlier read-modify-write append, which lost a run whenever two executions overlapped between the read and the write. That loss is now reproduced deterministically against the old algorithm in `tests/test_run_log_concurrency.py`, and the same interleaving — plus 12 genuinely concurrent OS processes — is proved to lose nothing under the current layout. Remaining honest limitation: the ledger still lives only in the git-ignored `warehouse/` directory, so it is per-environment and not yet persisted to S3/MinIO. Production-ready is therefore still not claimed.
+This replaces the earlier read-modify-write append, which lost a run whenever two executions overlapped between the read and the write. That loss is now reproduced deterministically against the old algorithm in `tests/test_run_log_concurrency.py`, and the same interleaving — plus 12 genuinely concurrent OS processes — is proved to lose nothing under the current layout. Since M14 the ledger is no longer purely per-environment: the scheduled evidence workflow persists each run's part file to a dedicated orphan `evidence` branch and refuses any commit that modifies or deletes an existing part, so the recorded history is append-only in git as well as on disk. Remaining honest limitation: this is durability inside one GitHub repository, not the S3/MinIO lake, and a local or Codespace run still keeps its ledger only in the git-ignored `warehouse/` directory. Production-ready is therefore still not claimed.
+
+## Published evidence page
+
+The dashboard is deployed on Streamlit Community Cloud, which suspends an app after inactivity. A reviewer opening that link is shown a wake-up screen rather than evidence, so availability there cannot be claimed.
+
+M14 adds a second, deliberately dumber surface: a static page generated from the run ledger by `evidence/render.py` and served from GitHub Pages. It has nothing to wake up. Because a static page can just as easily keep serving a cheerful result after the schedule feeding it has stopped, the page is built to fail closed:
+
+- It carries its own `generated at`, `latest run` and staleness threshold as data attributes, and re-evaluates its age in the reader's browser on load — so it turns itself `STALE` without any server. With JavaScript disabled it says freshness was not verified instead of implying it was.
+- Age overrides success. A run window that is entirely green but older than 30 hours renders `STALE`, not `HEALTHY`.
+- Days with no run are shown as explicit `MISSING` rows rather than omitted, so an empty stretch looks empty. An empty or wholly unparseable ledger renders `NO EVIDENCE` and exits non-zero; it cannot render a tidy page.
+- Rows that fail to parse are counted and displayed, never silently dropped, and the success-rate denominator is the number of *recorded runs* — stated on the page — not the number of days expected.
+- The page labels its own data mode (`SYNTHETIC FIXTURE`) and lists what it does and does not prove. The words `real-time`, `production-ready`, `uptime`, `always-on` and `24/7` are rejected by the test suite.
+
+`tests/test_evidence_render.py` covers the UTC day boundaries, the window edges, the strict staleness cut-off, malformed and missing columns, naive and offset timestamps, HTML escaping, JSON/HTML agreement, and byte-level determinism of the rendered payload.
 
 ## Evidence status
 
@@ -149,7 +165,10 @@ This replaces the earlier read-modify-write append, which lost a run whenever tw
 - PR #14: **merged** — squash merge SHA `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`; that SHA was verified as `main` HEAD during closure.
 - Post-merge `main` CI: **verified 2026-09-04T22:25Z** at `main` HEAD `035fddcc5e027241c2c02fb54012266b8da11c25` (`docs: add contribution guidance (#42)`, committed 2026-09-04T07:10:27Z). All three workflows succeeded on that exact SHA: `pipeline` run **#114** (`ingest-and-transform`, `dashboard-smoke`, `docker-smoke`, `remote-storage`, `dagster-orchestration` all SUCCESS; `alert-on-failure` SKIPPED by design), `run-audit` run **#64** SUCCESS, and `freshness-gate` run **#82** (`policy-tests` SUCCESS; `live-gate` and `alert-on-live-failure` SKIPPED on `push`). This supersedes the earlier closure gap at `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`; PR-head checks are still not treated as merge-commit checks.
 - Freshness issue deduplication: **corrected, operationally unverified** — the original job deduplicated on the issue title and only ever *created* issues, so once one was open every subsequent weekly failure produced no issue, no comment and no notification at all. It now dedupes on a stable HTML marker and comments on the existing issue with the run URL. A two-run manual proof is still required.
-- Deployment: **verified dormant 2026-09-04T22:25Z** — `econ-lakehouse-umut.streamlit.app` serves the Streamlit Community Cloud inactivity sleep page, so the dashboard is not reachable without a manual wake and the deployed SHA is unverifiable. Always-on availability is **not claimed**; a published evidence page that cannot sleep is tracked as the next milestone (M14).
+- Deployment: **verified dormant 2026-09-04T22:25Z** — `econ-lakehouse-umut.streamlit.app` serves the Streamlit Community Cloud inactivity sleep page, so the dashboard is not reachable without a manual wake and the deployed SHA is unverifiable. Always-on availability is **not claimed**; the evidence page that cannot sleep is implemented in M14 and its publication status is tracked separately below.
+- Evidence page renderer: **tested** — **34** tests covering window arithmetic, the fail-closed state hierarchy, malformed input, escaping, and deterministic output.
+- Evidence page publication: **implemented, not yet published** — GitHub Pages is disabled for this repository, so the publish job detects that through the Pages API, skips deploying, and records the reason in the run summary rather than reporting a deployment that did not happen. A live URL is claimed only once the deploy step has run and the post-deploy smoke test has matched the served bytes against the source commit.
+- Scheduled-run evidence: **not yet accumulated** — the daily schedule becomes active only once this workflow is on the default branch; consecutive-day evidence is claimed only after it exists in the ledger.
 - Production-ready: **not claimed**.
 
 ## Milestones
@@ -167,6 +186,7 @@ This replaces the earlier read-modify-write append, which lost a run whenever tw
 11. **M11 — freshness controls:** upstream freeze proved, **14** alternatives rejected as unsafe, dashboard staleness surfaced, deterministic boundary tests and live operational gate implemented.
 12. **M12 — pipeline run audit:** append-only Parquet run ledger, success/failure capture, DuckDB-readable evidence, CI artifact, and documented concurrency/durability limits.
 13. **M13 — concurrency-safe ledger:** per-run part files written through atomic renames, a derived snapshot that preserves the existing query and artifact contract, a deterministic replay of the lost update it removes, and a **12-process** parallel write proof in CI.
+14. **M14 — published evidence that cannot sleep:** a scheduled workflow that persists the run ledger to an append-only `evidence` branch and renders a static, self-checking status page — one that flips itself to `STALE` in the reader's browser, shows missing days instead of hiding them, refuses to render on an empty ledger, and publishes failed runs as loudly as successful ones.
 
 ## License
 

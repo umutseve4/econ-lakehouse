@@ -134,11 +134,67 @@ without duplicating current rows.
   directory is uploaded with the evidence artifact, so the artifact contains
   the source of truth and not only the snapshot.
 
+## Durable evidence and publication (M14)
+
+M13 made the ledger safe to write concurrently but left it per-environment: a
+CI runner is destroyed after every job, so a scheduled run could never see
+yesterday's history. M14 gives the ledger a home and a reader.
+
+**Persistence.** `.github/workflows/evidence.yml` keeps the ledger on a
+dedicated orphan branch, `evidence`, holding nothing but
+`run_log_parts/*.parquet`. An orphan branch was chosen over the alternatives
+because none of them is an audit trail: the Actions cache is evicted by a
+7-day TTL and by LRU pressure, ordinary artifacts expire, and the Pages
+artifact lives for one day. Git also gives the property the cache cannot —
+every append is a commit, attributable and reviewable, whose message carries
+the workflow run that produced it.
+
+The scheduled job restores the parts into `warehouse/run_log_parts/`, runs the
+pipeline, copies the new part back, and pushes. Before committing it inspects
+the staged name-status and **refuses any commit that modifies, renames or
+deletes an existing part** — append-only is enforced by the workflow, not
+merely intended. Because a part filename is derived from its `run_id`, a
+retried write is idempotent and a rewritten history is a hard failure.
+
+**Publication.** `evidence/render.py` turns the ledger into a static
+`index.html` plus a machine-readable `runs.json`. `build_site(runs, now, meta)`
+is pure — it performs no I/O, reads no clock and no environment — so its
+output is a deterministic function of its inputs and is asserted byte-for-byte
+in the tests; only the CLI wrapper touches the filesystem.
+
+The failure mode a static page introduces is the opposite of a sleeping app:
+it will happily keep serving a green result forever. The renderer is built
+against that:
+
+| risk | mitigation |
+|---|---|
+| page outlives its schedule | `data-generated-at` / `data-latest-run-at` / `data-stale-after-hours` are re-checked against `Date.now()` in the browser, which flips the page to `STALE` with no server involved |
+| success masks staleness | age outranks status: a fully green window older than the threshold renders `STALE`, never `HEALTHY` |
+| gaps look like absence of failure | every UTC day without a run is an explicit `MISSING` row; an empty ledger renders 14 of them |
+| empty ledger renders a tidy page | state `no-evidence`, and `--fail-on-state no-evidence` exits non-zero so CI blocks |
+| bad rows disappear | unparseable rows are counted as `malformed_ledger_rows` and shown |
+| flattering arithmetic | the success-rate denominator is *recorded runs*, stated on the page, not expected days |
+| overclaiming | forbidden strings (`real-time`, `production-ready`, `uptime`, `always-on`, `24/7`) are rejected by the test suite |
+| JavaScript disabled | `<noscript>` states that freshness was *not* verified rather than implying it was |
+
+The state hierarchy is strictly ordered `no-evidence > stale > failing > ok`,
+and the staleness cut-off is strict: exactly at the threshold is still fresh,
+one minute past it is not.
+
+**What this does not prove.** The published page reports a scheduled fixture
+run, not a live upstream ingestion, and it is labelled `DATA MODE: SYNTHETIC
+FIXTURE` on its face. GitHub may also disable scheduled workflows on a public
+repository after a period of inactivity; if that happens the page goes
+`STALE` on its own rather than pretending otherwise, which is the entire
+point of building it this way.
+
 ## Known limitations
 
-* `warehouse/` is git-ignored, so the ledger is per-environment. Durable
-  cross-run history requires persisting it to the S3/MinIO lake — still out
-  of scope, and therefore no cross-environment history is claimed.
+* Local and Codespace runs still keep the ledger only in the git-ignored
+  `warehouse/` directory. Scheduled CI runs are persisted to the `evidence`
+  branch (see above), but that is durability inside one GitHub repository,
+  not the S3/MinIO lake — still out of scope, and therefore no
+  cross-environment history is claimed.
 * Concurrency safety rests on `os.replace` being atomic within one
   filesystem. That holds for a local disk and for the CI runner; it is not
   guaranteed on every network filesystem, so a shared NFS mount is not a

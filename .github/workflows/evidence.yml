@@ -1,0 +1,370 @@
+name: evidence
+
+# Publishes a static evidence page for this pipeline (M14).
+#
+# The problem this solves: the previous public surface was a Streamlit
+# Community Cloud app, which is suspended after inactivity. A reviewer who
+# opened the portfolio link got a "wake this app" screen instead of
+# evidence. A static page has nothing to wake up.
+#
+# The problem this workflow must not introduce: a static page can keep
+# serving a cheerful result long after the schedule feeding it has stopped.
+# Three things prevent that here.
+#   1. The rendered page re-checks its own age in the reader's browser and
+#      flips to STALE on its own.
+#   2. The ledger is persisted on the `evidence` branch, append-only and
+#      enforced below, so history cannot be quietly rewritten.
+#   3. A failed pipeline run is still recorded and still published — the
+#      page shows FAILING — and the workflow *then* fails so the failure
+#      is also visible in the Actions tab.
+#
+# Scheduled runs execute against the committed synthetic fixture. No secret
+# and no paid resource is used.
+
+on:
+  schedule:
+    # 05:23 UTC — deliberately off the hour, where scheduled-run congestion
+    # on GitHub's shared runners is worst.
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types: [publish-evidence]
+  pull_request:
+    paths:
+      - "evidence/**"
+      - "tests/test_evidence_render.py"
+      - ".github/workflows/evidence.yml"
+      - "observability/**"
+      - "orchestrate.py"
+
+# Least privilege by default; the two jobs that need more raise it themselves.
+permissions:
+  contents: read
+
+# One writer at a time for the `evidence` branch. Queued runs must not
+# cancel each other, because a cancelled run is a lost ledger row.
+concurrency:
+  group: evidence-ledger
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------- PR ---
+  # Pull requests only verify the renderer. They never write to the ledger
+  # branch and never deploy, so a fork PR cannot publish anything.
+  render-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Unit tests — the page cannot lie
+        run: python -m pytest tests/test_evidence_render.py -q
+
+      - name: An empty ledger must fail closed, not render a tidy page
+        run: |
+          set -euo pipefail
+          rm -rf warehouse site
+          if python -m evidence.render \
+               --ledger warehouse/run_log.parquet \
+               --out site \
+               --fail-on-state no-evidence; then
+            echo "FAIL: the renderer accepted an empty ledger"
+            exit 1
+          fi
+          grep -q "NO EVIDENCE" site/index.html
+          test "$(grep -c 'MISSING — no run recorded' site/index.html)" = "14"
+          echo "empty ledger renders 14 explicit MISSING days and exits non-zero: OK"
+
+      - name: Render from a real pipeline run
+        run: |
+          set -euo pipefail
+          rm -rf site
+          python orchestrate.py
+          python -m evidence.render \
+            --ledger warehouse/run_log.parquet \
+            --out site \
+            --window-days 14 \
+            --stale-after-hours 30 \
+            --fail-on-state no-evidence
+          grep -q "DATA MODE: SYNTHETIC FIXTURE" site/index.html
+          grep -q "Does not prove:" site/index.html
+          python -c "import json,sys; p=json.load(open('site/runs.json')); print(json.dumps(p['counts'])); sys.exit(0 if p['counts']['runs_total']>=1 else 1)"
+
+      - name: Upload the rendered preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-site-preview
+          path: site
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ----------------------------------------------------------- schedule ---
+  collect:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Needed only to append this run's part file to the `evidence` branch.
+      contents: write
+    outputs:
+      pipeline_outcome: ${{ steps.pipeline.outcome }}
+      state: ${{ steps.render.outputs.state }}
+    steps:
+      - name: Check out the pipeline source
+        uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # `warehouse/` is git-ignored, so without this the ledger would be
+      # per-runner and every day would look like day one.
+      - name: Check out the persisted ledger branch
+        id: ledger_checkout
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          ref: evidence
+          path: .evidence
+
+      - name: Create the ledger branch (first run only)
+        if: steps.ledger_checkout.outcome != 'success'
+        uses: actions/checkout@v7
+        with:
+          path: .evidence
+
+      - name: Make the ledger branch an orphan (first run only)
+        if: steps.ledger_checkout.outcome != 'success'
+        working-directory: .evidence
+        run: |
+          set -euo pipefail
+          git checkout --orphan evidence
+          git rm -rf --cached . > /dev/null
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          mkdir -p run_log_parts
+          printf '%s\n' \
+            '# econ-lakehouse evidence ledger' \
+            '' \
+            'Append-only Parquet part files, one per pipeline run, written by' \
+            '`.github/workflows/evidence.yml`. This branch carries no source code.' \
+            'Rendered for humans at the repository GitHub Pages URL.' \
+            > README.md
+
+      - name: Restore previously recorded runs
+        run: |
+          set -euo pipefail
+          mkdir -p warehouse/run_log_parts .evidence/run_log_parts
+          if compgen -G ".evidence/run_log_parts/*.parquet" > /dev/null; then
+            cp .evidence/run_log_parts/*.parquet warehouse/run_log_parts/
+          fi
+          echo "restored $(find warehouse/run_log_parts -name '*.parquet' | wc -l) part file(s)"
+
+      # No EVDS_API_KEY is provided, so the orchestrator runs in fixture
+      # mode. It records its own row either way, which is exactly why a
+      # failure here must not stop the publish: a failed run is evidence too.
+      - name: Run the pipeline (fixture mode, no credentials)
+        id: pipeline
+        continue-on-error: true
+        run: python orchestrate.py
+
+      - name: Append this run to the ledger branch
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p .evidence/run_log_parts
+          if compgen -G "warehouse/run_log_parts/*.parquet" > /dev/null; then
+            cp warehouse/run_log_parts/*.parquet .evidence/run_log_parts/
+          fi
+          cd .evidence
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A run_log_parts README.md
+          if git diff --cached --quiet; then
+            echo "no new ledger rows to commit"
+            exit 0
+          fi
+          # Append-only: a part file is immutable once written. Anything
+          # other than an addition means history is being rewritten.
+          if git diff --cached --name-status -- run_log_parts | grep -Eq '^(D|M|R)'; then
+            echo "ERROR: the run ledger is append-only; refusing to modify or delete existing parts"
+            git diff --cached --name-status -- run_log_parts
+            exit 1
+          fi
+          git commit -m "evidence: record run from ${GITHUB_SHA::7} (workflow run ${GITHUB_RUN_ID})"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:evidence; then
+              echo "ledger pushed on attempt ${attempt}"
+              exit 0
+            fi
+            echo "push rejected; refreshing and retrying"
+            git fetch origin evidence
+            git rebase origin/evidence
+            sleep 5
+          done
+          echo "ERROR: could not push the ledger after 3 attempts"
+          exit 1
+
+      - name: Render the evidence page
+        id: render
+        if: always()
+        run: |
+          set -euo pipefail
+          python -m evidence.render \
+            --ledger warehouse/run_log.parquet \
+            --out site \
+            --window-days 14 \
+            --stale-after-hours 30 \
+            --schedule-desc "daily, 05:23 UTC" \
+            --ledger-ref "branch: evidence, path: run_log_parts/" \
+            --fail-on-state no-evidence
+          state=$(python -c "import json;print(json.load(open('site/runs.json'))['state'])")
+          echo "state=${state}" >> "$GITHUB_OUTPUT"
+
+      - name: Write the run summary
+        if: always()
+        run: |
+          {
+            echo "## Evidence run"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| pipeline step | \`${{ steps.pipeline.outcome }}\` |"
+            echo "| page state | \`${{ steps.render.outputs.state }}\` |"
+            echo "| ledger branch | \`evidence\` |"
+            echo "| source commit | \`${GITHUB_SHA}\` |"
+            echo ""
+            if [ "${{ steps.pipeline.outcome }}" != "success" ]; then
+              echo "> The pipeline run **failed**. The failure was still recorded in the"
+              echo "> ledger and is still published; this workflow reports failure at the end."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the site as a Pages artifact
+        if: always()
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Upload the ledger as a downloadable artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-ledger-${{ github.run_id }}
+          path: |
+            warehouse/run_log.parquet
+            warehouse/run_log_parts/
+            site/runs.json
+          if-no-files-found: error
+          retention-days: 30
+
+  # GitHub Pages must be enabled by a repository administrator
+  # (Settings -> Pages -> Source: GitHub Actions). Until that happens,
+  # deploying is impossible, so the publish job is skipped with a loud
+  # message rather than failing every scheduled run for a reason no code
+  # change can fix.
+  pages-preflight:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: read
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/pages" > /dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "GitHub Pages is enabled." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Publish skipped"
+              echo ""
+              echo "GitHub Pages is not enabled for this repository, so there is"
+              echo "nothing to deploy to. Enable it at **Settings -> Pages ->"
+              echo "Build and deployment -> Source: GitHub Actions**, then re-run"
+              echo "this workflow. The evidence ledger was still recorded."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  publish:
+    needs: [collect, pages-preflight]
+    if: needs.pages-preflight.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+      # A deploy that reports success but serves the previous build is the
+      # exact failure this milestone exists to rule out, so the published
+      # bytes are checked, not assumed.
+      - name: Smoke-test the page that is actually being served
+        env:
+          PAGE_URL: ${{ steps.deploy.outputs.page_url }}
+        run: |
+          set -euo pipefail
+          code=000
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sS -L -o /tmp/page.html -w '%{http_code}' "$PAGE_URL" || echo 000)
+            [ "$code" = "200" ] && break
+            echo "attempt ${attempt}: HTTP ${code}; waiting"
+            sleep 10
+          done
+          test "$code" = "200"
+          grep -q "$GITHUB_SHA" /tmp/page.html \
+            || { echo "ERROR: the served page was not built from ${GITHUB_SHA}"; exit 1; }
+          grep -q "DATA MODE: SYNTHETIC FIXTURE" /tmp/page.html
+          echo "published page verified at ${PAGE_URL}"
+          echo "Published and verified: ${PAGE_URL}" >> "$GITHUB_STEP_SUMMARY"
+
+  # Runs last so that a failed pipeline is published first and reported
+  # second. Without this the workflow would be green while the pipeline it
+  # measures was broken.
+  report:
+    needs: [collect, pages-preflight, publish]
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if the pipeline run or the publish did not succeed
+        run: |
+          set -euo pipefail
+          echo "collect:   ${{ needs.collect.result }}"
+          echo "pipeline:  ${{ needs.collect.outputs.pipeline_outcome }}"
+          echo "state:     ${{ needs.collect.outputs.state }}"
+          echo "preflight: ${{ needs.pages-preflight.result }} (pages enabled: ${{ needs.pages-preflight.outputs.enabled }})"
+          echo "publish:   ${{ needs.publish.result }}"
+          fail=0
+          [ "${{ needs.collect.result }}" = "success" ] || fail=1
+          [ "${{ needs.collect.outputs.pipeline_outcome }}" = "success" ] || fail=1
+          if [ "${{ needs.pages-preflight.outputs.enabled }}" = "true" ]; then
+            [ "${{ needs.publish.result }}" = "success" ] || fail=1
+          fi
+          exit "$fail"
