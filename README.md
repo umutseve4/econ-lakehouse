@@ -109,8 +109,10 @@ Therefore this repository does **not** splice a different methodology onto the o
 - **4+ calendar months:** stale/fail.
 - Dashboard: exact newest date, exact month lag, and prominent stale warning.
 - Every PR/push: deterministic `3`-month-pass and `4`-month-fail tests.
-- Weekly/manual live run: fetch `TP.FG.J0`, fail beyond **3 months**, and open one deduplicated `data-freshness` issue.
+- Weekly/manual live run: fetch `TP.FG.J0`, fail beyond **3 months**, and open one deduplicated `data-freshness` issue, or comment on it if it is already open.
 - Future migration: require authoritative series metadata and full-history compatibility evidence, then rebuild the whole history and document the methodology break.
+
+Because the freeze is known, investigated and permanent, the weekly gate would otherwise be red forever — and a check that can only ever be red carries no information. CI therefore recognises one **time-boxed acknowledgement** (`ingest/freshness_waiver.py`, expiring **2026-10-05**, exclusive) that classifies this exact series at this exact frozen month as `acknowledged_stale` rather than a new failure. It is **CI-only**: `quality/freshness.py` is unchanged, so the dashboard still reports the freeze as an error to human readers. Any change in series, month or date makes the gate red again with no human action. Details and renewal rules: [docs/data-freshness.md](docs/data-freshness.md).
 
 Operational evidence and commands are documented in [docs/data-freshness.md](docs/data-freshness.md).
 
@@ -140,12 +142,13 @@ This replaces the earlier read-modify-write append, which lost a run whenever tw
 - Serving API: **tested** — **13** fixture-based tests, including SQL injection and limit validation.
 - Dashboard: **tested** — **11** data/UI tests with a headless Streamlit `AppTest` render.
 - Bootstrap/provenance: **tested** — **8** stubbed tests plus fixture-mode end-to-end build.
-- Freshness policy: **tested** — exact boundary tests for **3 months = pass** and **4 months = fail**, CSV-tail detection, and scheduled/manual live enforcement code.
+- Freshness policy: **tested** — **73** offline checks covering the **3 months = pass** / **4 months = fail** boundary, CSV-tail detection, the production CLI itself, and the time-boxed acknowledgement layer. Most of them are negative: they prove the acknowledgement does *not* apply to the wrong series, a missing series, a moved month, or an expired date. The suite is **mutation-verified** — pulling `review_by` back, advancing `frozen_at`, and dropping `--series` from the CLI were each applied and each turned the suite red (12, 15 and 4 checks respectively) before being reverted.
+- Acknowledgement isolation: **tested statically** — the suite reads `quality/freshness.py` and every `dashboard/*.py` and fails if the waiver is referenced there, so the dashboard cannot start agreeing with CI by accident.
 - Run audit: **implemented and PR-tested** — append-only Parquet history, success/failure paths, independent DuckDB read, and artifact contract.
 - Concurrent-write durability: **tested** — the previous read-modify-write append is replayed through the exact interleaving that silently erased a run, and the current per-part layout is proved to keep every row through that same interleaving, through pre-M13 history migration, through retried writes, and through **12 parallel OS processes** writing to one ledger. Cross-environment durability (persisting the ledger to S3/MinIO) is still **not** implemented.
 - PR #14: **merged** — squash merge SHA `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`; that SHA was verified as `main` HEAD during closure.
 - Post-merge `main` CI: **verified 2026-09-04T22:25Z** at `main` HEAD `035fddcc5e027241c2c02fb54012266b8da11c25` (`docs: add contribution guidance (#42)`, committed 2026-09-04T07:10:27Z). All three workflows succeeded on that exact SHA: `pipeline` run **#114** (`ingest-and-transform`, `dashboard-smoke`, `docker-smoke`, `remote-storage`, `dagster-orchestration` all SUCCESS; `alert-on-failure` SKIPPED by design), `run-audit` run **#64** SUCCESS, and `freshness-gate` run **#82** (`policy-tests` SUCCESS; `live-gate` and `alert-on-live-failure` SKIPPED on `push`). This supersedes the earlier closure gap at `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`; PR-head checks are still not treated as merge-commit checks.
-- Freshness issue deduplication: **implemented, operationally unverified** — a two-run manual proof is still required.
+- Freshness issue deduplication: **corrected, operationally unverified** — the original job deduplicated on the issue title and only ever *created* issues, so once one was open every subsequent weekly failure produced no issue, no comment and no notification at all. It now dedupes on a stable HTML marker and comments on the existing issue with the run URL. A two-run manual proof is still required.
 - Deployment: **verified dormant 2026-09-04T22:25Z** — `econ-lakehouse-umut.streamlit.app` serves the Streamlit Community Cloud inactivity sleep page, so the dashboard is not reachable without a manual wake and the deployed SHA is unverifiable. Always-on availability is **not claimed**; a published evidence page that cannot sleep is tracked as the next milestone (M14).
 - Production-ready: **not claimed**.
 
