@@ -31,7 +31,8 @@ Gold mart_inflation_yoy
         └── Streamlit dashboard (provenance + freshness visible)
 
 Each orchestrated run
-        └── warehouse/run_log.parquet (append-only audit record)
+        └── warehouse/run_log_parts/ (one atomic part file per run)
+                └── warehouse/run_log.parquet (derived snapshot)
 ```
 
 | Layer | Main tools | Enforced checks |
@@ -40,7 +41,7 @@ Each orchestrated run
 | Silver | dbt, DuckDB | typing, `not_null`, uniqueness, positivity, latest-fetch deduplication |
 | Gold | dbt table | non-null YoY metric, non-empty mart, revision history |
 | Serving | FastAPI, Streamlit | read-only DB, parameterized SQL, response limits, provenance and freshness disclosure |
-| Operations | GitHub Actions, Docker, Dagster, Parquet audit log | clean rebuilds, remote-storage smoke, scheduled alerting, live freshness gate, one run record per orchestration attempt |
+| Operations | GitHub Actions, Docker, Dagster, Parquet audit log | clean rebuilds, remote-storage smoke, scheduled alerting, live freshness gate, one atomically written run record per orchestration attempt, proven against 12 concurrent writers |
 
 ## Quickstart
 
@@ -123,13 +124,15 @@ The main workflow rebuilds and verifies ingestion, dbt models/tests, idempotency
 
 The independent freshness workflow runs deterministic policy tests on code changes and the live gate weekly at `47 6 * * 1` or on manual dispatch. Keeping the live upstream check separate prevents a known external freeze from making unrelated pull requests unmergeable while still producing an operational failure signal.
 
-The independent run-audit workflow executes the fixture pipeline twice, checks for exactly **2 rows** and **2 unique `run_id` values**, exercises the failure path, reads the Parquet log with DuckDB, and uploads the audit artifact.
+The independent run-audit workflow runs the contract, failure-path, and concurrency test modules, executes the fixture pipeline twice, then reads the result back with DuckDB from both the derived snapshot and the `run_log_parts/*.parquet` glob — asserting that no `run_id` appears twice, that the schema contract holds, and that the snapshot row count equals the parts row count. Both the snapshot and the parts directory are uploaded as the audit artifact.
 
 ## Run observability
 
-Every `orchestrate.py` attempt writes one append-only record to `warehouse/run_log.parquet` without changing the pipeline's original exit semantics. The record includes run identity and timing, success/failure state, mode and source, bronze/gold row counts, step totals, failed step, and Git SHA. Query examples, the schema contract, CI evidence, and concurrency limitations are documented in [docs/observability.md](docs/observability.md).
+Every `orchestrate.py` attempt writes one append-only record without changing the pipeline's original exit semantics. The record includes run identity and timing, success/failure state, mode and source, bronze/gold row counts, step totals, failed step, and Git SHA. Query examples, the schema contract, and CI evidence are documented in [docs/observability.md](docs/observability.md).
 
-This audit layer is intentionally local and single-writer: the current read-modify-write append is not atomic, concurrent runs can lose rows, and the audit history is not yet persisted to S3/MinIO. These limitations prevent a production-ready claim.
+Each run writes its **own** part file under `warehouse/run_log_parts/` through a temporary file and an atomic `os.replace`, so no run reads or rewrites another run's data. `warehouse/run_log.parquet` is a derived snapshot rebuilt from those parts, kept so the documented DuckDB one-liner and the CI artifact contract are unchanged; it can be regenerated at any time with `compact()`.
+
+This replaces the earlier read-modify-write append, which lost a run whenever two executions overlapped between the read and the write. That loss is now reproduced deterministically against the old algorithm in `tests/test_run_log_concurrency.py`, and the same interleaving — plus 12 genuinely concurrent OS processes — is proved to lose nothing under the current layout. Remaining honest limitation: the ledger still lives only in the git-ignored `warehouse/` directory, so it is per-environment and not yet persisted to S3/MinIO. Production-ready is therefore still not claimed.
 
 ## Evidence status
 
@@ -138,11 +141,12 @@ This audit layer is intentionally local and single-writer: the current read-modi
 - Dashboard: **tested** — **11** data/UI tests with a headless Streamlit `AppTest` render.
 - Bootstrap/provenance: **tested** — **8** stubbed tests plus fixture-mode end-to-end build.
 - Freshness policy: **tested** — exact boundary tests for **3 months = pass** and **4 months = fail**, CSV-tail detection, and scheduled/manual live enforcement code.
-- Run audit: **implemented and PR-tested** — append-only Parquet history, success/failure paths, independent DuckDB read, and artifact contract. Operational concurrent-write durability is not implemented.
+- Run audit: **implemented and PR-tested** — append-only Parquet history, success/failure paths, independent DuckDB read, and artifact contract.
+- Concurrent-write durability: **tested** — the previous read-modify-write append is replayed through the exact interleaving that silently erased a run, and the current per-part layout is proved to keep every row through that same interleaving, through pre-M13 history migration, through retried writes, and through **12 parallel OS processes** writing to one ledger. Cross-environment durability (persisting the ledger to S3/MinIO) is still **not** implemented.
 - PR #14: **merged** — squash merge SHA `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`; that SHA was verified as `main` HEAD during closure.
 - Post-merge `main` CI: **verified 2026-09-04T22:25Z** at `main` HEAD `035fddcc5e027241c2c02fb54012266b8da11c25` (`docs: add contribution guidance (#42)`, committed 2026-09-04T07:10:27Z). All three workflows succeeded on that exact SHA: `pipeline` run **#114** (`ingest-and-transform`, `dashboard-smoke`, `docker-smoke`, `remote-storage`, `dagster-orchestration` all SUCCESS; `alert-on-failure` SKIPPED by design), `run-audit` run **#64** SUCCESS, and `freshness-gate` run **#82** (`policy-tests` SUCCESS; `live-gate` and `alert-on-live-failure` SKIPPED on `push`). This supersedes the earlier closure gap at `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`; PR-head checks are still not treated as merge-commit checks.
 - Freshness issue deduplication: **implemented, operationally unverified** — a two-run manual proof is still required.
-- Deployment: **verified dormant 2026-09-04T22:25Z** — `econ-lakehouse-umut.streamlit.app` serves the Streamlit Community Cloud inactivity sleep page, so the dashboard is not reachable without a manual wake and the deployed SHA is unverifiable. Always-on availability is **not claimed**; a published evidence page that cannot sleep is tracked as the next milestone (M13).
+- Deployment: **verified dormant 2026-09-04T22:25Z** — `econ-lakehouse-umut.streamlit.app` serves the Streamlit Community Cloud inactivity sleep page, so the dashboard is not reachable without a manual wake and the deployed SHA is unverifiable. Always-on availability is **not claimed**; a published evidence page that cannot sleep is tracked as the next milestone (M14).
 - Production-ready: **not claimed**.
 
 ## Milestones
@@ -159,6 +163,7 @@ This audit layer is intentionally local and single-writer: the current read-modi
 10. **M10 — provenance/self-healing:** durable fixture/live provenance and live rebuild.
 11. **M11 — freshness controls:** upstream freeze proved, **14** alternatives rejected as unsafe, dashboard staleness surfaced, deterministic boundary tests and live operational gate implemented.
 12. **M12 — pipeline run audit:** append-only Parquet run ledger, success/failure capture, DuckDB-readable evidence, CI artifact, and documented concurrency/durability limits.
+13. **M13 — concurrency-safe ledger:** per-run part files written through atomic renames, a derived snapshot that preserves the existing query and artifact contract, a deterministic replay of the lost update it removes, and a **12-process** parallel write proof in CI.
 
 ## License
 
