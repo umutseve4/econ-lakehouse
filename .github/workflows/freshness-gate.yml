@@ -66,8 +66,11 @@ jobs:
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         run: python ingest/evds_client.py --series TP.FG.J0 --start 2015-01 --out data/evds/cpi_evds.csv
+      # --series is what allows a documented, time-boxed acknowledgement to
+      # apply. Without it the gate still runs, but no acknowledgement can ever
+      # match — an omission fails closed rather than open.
       - name: Enforce maximum 3-month observation lag
-        run: python ingest/freshness_gate.py --csv data/evds/cpi_evds.csv --max-lag-months 3
+        run: python ingest/freshness_gate.py --csv data/evds/cpi_evds.csv --max-lag-months 3 --series TP.FG.J0
 
   alert-on-live-failure:
     needs: [live-gate]
@@ -91,7 +94,14 @@ jobs:
               labels: 'data-freshness',
               per_page: 100,
             });
-            if (!open.some(issue => issue.title === title)) {
+            // Dedupe on the stable marker so the issue can be retitled (for
+            // example into an accepted-incident record) without spawning a
+            // duplicate. The title match is a fallback for issues opened
+            // before the marker existed.
+            const existing = open.find(
+              (issue) => (issue.body || '').includes(marker) || issue.title === title
+            );
+            if (!existing) {
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -99,4 +109,15 @@ jobs:
                 labels: ['data-freshness'],
                 body: `${marker}\nThe production CPI source exceeded the 3-month freshness limit.\n\nRun: ${runUrl}\n\nDo not silently substitute another series; verify its identity and YoY compatibility first.`,
               });
+              return;
             }
+            // Without this comment a recurring failure would be completely
+            // silent: the issue is already open, so nothing is created and
+            // nobody is notified. That is exactly the state the week an
+            // acknowledgement expires.
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.number,
+              body: `${marker}\nThe freshness gate failed again on \`${context.eventName}\`.\n\nRun: ${runUrl}\n\nIf a time-boxed acknowledgement was covering this series, it has expired or no longer matches (the upstream month moved, or the series changed). Re-run the investigation before touching \`ingest/freshness_waiver.py\` — extending a waiver without new evidence is how a gate becomes decoration.`,
+            });
