@@ -6,3 +6,8 @@ dbt_packages/
 logs/
 .venv/
 .streamlit/secrets.toml
+
+# Produced by .github/workflows/evidence.yml: the rendered evidence page and
+# the working copy of the append-only `evidence` ledger branch.
+site/
+.evidence/
