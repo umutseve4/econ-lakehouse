@@ -10,7 +10,7 @@ A tested medallion-architecture warehouse for Turkish macroeconomic data. It tur
 
 > **Freshness notice (verified 2026-08-22):** the official production source `TP.FG.J0` currently ends at **2026-01**. The warehouse is live-source, but its newest CPI observation is not current. The dashboard is designed to display the exact observation date and lag instead of presenting the value as current. See [Data freshness policy](docs/data-freshness.md).
 
-> **Deployment evidence boundary:** the application URL is retained for portfolio access, but current reachability and the deployed commit SHA were not independently re-verified during the M12 closure. Deployment availability is therefore tracked separately from code and CI evidence.
+> **Deployment evidence boundary (re-verified 2026-09-04T22:25Z):** the Streamlit Community Cloud application is currently **dormant**. The URL returns "This app has gone to sleep due to inactivity" instead of the dashboard, so the deployed commit SHA cannot be verified while it sleeps. The link is retained for portfolio access and wakes on click, but no always-on availability is claimed and deployment is tracked separately from code and CI evidence.
 
 ## Why this exists
 
@@ -140,9 +140,9 @@ This audit layer is intentionally local and single-writer: the current read-modi
 - Freshness policy: **tested** — exact boundary tests for **3 months = pass** and **4 months = fail**, CSV-tail detection, and scheduled/manual live enforcement code.
 - Run audit: **implemented and PR-tested** — append-only Parquet history, success/failure paths, independent DuckDB read, and artifact contract. Operational concurrent-write durability is not implemented.
 - PR #14: **merged** — squash merge SHA `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`; that SHA was verified as `main` HEAD during closure.
-- Post-merge `main` CI for `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`: **unverified during closure**; PR-head checks are not treated as merge-commit checks.
+- Post-merge `main` CI: **verified 2026-09-04T22:25Z** at `main` HEAD `035fddcc5e027241c2c02fb54012266b8da11c25` (`docs: add contribution guidance (#42)`, committed 2026-09-04T07:10:27Z). All three workflows succeeded on that exact SHA: `pipeline` run **#114** (`ingest-and-transform`, `dashboard-smoke`, `docker-smoke`, `remote-storage`, `dagster-orchestration` all SUCCESS; `alert-on-failure` SKIPPED by design), `run-audit` run **#64** SUCCESS, and `freshness-gate` run **#82** (`policy-tests` SUCCESS; `live-gate` and `alert-on-live-failure` SKIPPED on `push`). This supersedes the earlier closure gap at `b4bbc875fc32ba075fa00fff20b5a4a0659f0900`; PR-head checks are still not treated as merge-commit checks.
 - Freshness issue deduplication: **implemented, operationally unverified** — a two-run manual proof is still required.
-- Deployment: **historically configured, currently unverified during M12 closure** — current reachability and deployed SHA require separate evidence.
+- Deployment: **verified dormant 2026-09-04T22:25Z** — `econ-lakehouse-umut.streamlit.app` serves the Streamlit Community Cloud inactivity sleep page, so the dashboard is not reachable without a manual wake and the deployed SHA is unverifiable. Always-on availability is **not claimed**; a published evidence page that cannot sleep is tracked as the next milestone (M13).
 - Production-ready: **not claimed**.
 
 ## Milestones
