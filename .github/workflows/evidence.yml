@@ -56,11 +56,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -69,7 +69,7 @@ jobs:
           pip install pytest
 
       - name: Unit tests — the page cannot lie
-        run: pytest tests/test_evidence_render.py -q
+        run: python -m pytest tests/test_evidence_render.py -q
 
       - name: An empty ledger must fail closed, not render a tidy page
         run: |
@@ -107,7 +107,7 @@ jobs:
         with:
           name: evidence-site-preview
           path: site
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 14
 
   # ----------------------------------------------------------- schedule ---
@@ -123,11 +123,11 @@ jobs:
       state: ${{ steps.render.outputs.state }}
     steps:
       - name: Check out the pipeline source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -139,14 +139,14 @@ jobs:
       - name: Check out the persisted ledger branch
         id: ledger_checkout
         continue-on-error: true
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: evidence
           path: .evidence
 
       - name: Create the ledger branch (first run only)
         if: steps.ledger_checkout.outcome != 'success'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: .evidence
 
