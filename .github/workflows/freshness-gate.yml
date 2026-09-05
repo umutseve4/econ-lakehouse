@@ -8,12 +8,27 @@ on:
     - cron: "47 6 * * 1"  # after the main Monday pipeline
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: freshness-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   policy-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Freshness policy boundary tests (offline)
@@ -22,13 +37,21 @@ jobs:
   live-gate:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - name: Install live-gate runtime dependency
+        run: python -m pip install "pandas>=2.2"
       - name: Require EVDS credential
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
@@ -43,17 +66,22 @@ jobs:
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         run: python ingest/evds_client.py --series TP.FG.J0 --start 2015-01 --out data/evds/cpi_evds.csv
+      # --series is what allows a documented, time-boxed acknowledgement to
+      # apply. Without it the gate still runs, but no acknowledgement can ever
+      # match — an omission fails closed rather than open.
       - name: Enforce maximum 3-month observation lag
-        run: python ingest/freshness_gate.py --csv data/evds/cpi_evds.csv --max-lag-months 3
+        run: python ingest/freshness_gate.py --csv data/evds/cpi_evds.csv --max-lag-months 3 --series TP.FG.J0
 
   alert-on-live-failure:
     needs: [live-gate]
     if: failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
+      contents: read
       issues: write
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
@@ -66,7 +94,14 @@ jobs:
               labels: 'data-freshness',
               per_page: 100,
             });
-            if (!open.some(issue => issue.title === title)) {
+            // Dedupe on the stable marker so the issue can be retitled (for
+            // example into an accepted-incident record) without spawning a
+            // duplicate. The title match is a fallback for issues opened
+            // before the marker existed.
+            const existing = open.find(
+              (issue) => (issue.body || '').includes(marker) || issue.title === title
+            );
+            if (!existing) {
               await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -74,4 +109,15 @@ jobs:
                 labels: ['data-freshness'],
                 body: `${marker}\nThe production CPI source exceeded the 3-month freshness limit.\n\nRun: ${runUrl}\n\nDo not silently substitute another series; verify its identity and YoY compatibility first.`,
               });
+              return;
             }
+            // Without this comment a recurring failure would be completely
+            // silent: the issue is already open, so nothing is created and
+            // nobody is notified. That is exactly the state the week an
+            // acknowledgement expires.
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.number,
+              body: `${marker}\nThe freshness gate failed again on \`${context.eventName}\`.\n\nRun: ${runUrl}\n\nIf a time-boxed acknowledgement was covering this series, it has expired or no longer matches (the upstream month moved, or the series changed). Re-run the investigation before touching \`ingest/freshness_waiver.py\` — extending a waiver without new evidence is how a gate becomes decoration.`,
+            });

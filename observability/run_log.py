@@ -1,14 +1,54 @@
 """Pipeline run audit log — durable observability for every orchestrator run.
 
-Every execution of `orchestrate.py` (local, Docker, CI or Dagster) appends
-exactly one row to a Parquet audit table under `warehouse/run_log.parquet`.
-The table answers the questions an on-call engineer actually asks:
+Every execution of `orchestrate.py` (local, Docker, CI or Dagster) records
+exactly one row in a Parquet audit ledger under `warehouse/`. The ledger
+answers the questions an on-call engineer actually asks:
 
     * when did the pipeline last run, and did it succeed?
     * was it live EVDS data or the synthetic fixture?
     * how long did it take, and is it getting slower?
     * how many bronze/gold rows did that run produce?
     * which commit produced it?
+
+Storage layout (M13)
+--------------------
+The ledger is a **part directory plus a derived snapshot**, not a single
+mutable file:
+
+    warehouse/run_log_parts/run-<run_id>-<digest>.parquet   <- source of truth
+    warehouse/run_log.parquet                               <- derived snapshot
+
+Each run writes its *own* part file, so two runs never write the same
+object and no run has to read another run's data in order to record its
+own. Every write goes to a temporary file in the destination directory
+and is then moved into place with `os.replace`, which is atomic on POSIX
+and on Windows — a reader therefore sees either the old file or the
+complete new one, never a half-written Parquet footer.
+
+`warehouse/run_log.parquet` is kept as a *derived* convenience snapshot so
+that the documented one-liner `select * from 'warehouse/run_log.parquet'`
+and the CI artifact contract keep working unchanged. It is rebuilt from
+the parts on every append and is always safe to delete or regenerate with
+`compact()`. Losing it loses nothing: the parts are the ledger.
+
+Rebuilding that snapshot is itself a read-modify-write — list the
+parts, then replace the file — so two rebuilds overlapping between the
+list and the replace leave a snapshot that is missing a run which *is*
+durably present in the parts. No audit row is lost, but the documented
+one-liner, the CI artifact and the evidence page all read the snapshot,
+so they would silently under-report. `compact()` therefore holds an
+exclusive advisory lock across the list-and-replace.
+
+Why this replaces the previous read-modify-write append
+-------------------------------------------------------
+The earlier implementation read the whole Parquet file, concatenated one
+row, and wrote the file back. Two runs overlapping anywhere between the
+read and the write produced a classic lost update: the second writer's
+snapshot did not contain the first writer's row, and the first row was
+silently erased. An audit log that can silently drop the record of a run
+is worse than no audit log, because it is trusted. `tests/
+test_run_log_concurrency.py` reproduces that loss deterministically
+against the old algorithm and proves this layout does not lose the row.
 
 Design notes
 ------------
@@ -17,19 +57,33 @@ Design notes
 * Failure rows are recorded too — a log that only records successes is
   useless for incident review.
 * Parquet (not JSON) so the audit table is queryable from DuckDB with the
-  same engine as the marts: `select * from 'warehouse/run_log.parquet'`.
+  same engine as the marts.
+* Re-recording the same `run_id` overwrites that run's own part and stays
+  one row, so a retried write cannot duplicate history.
 """
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import logging
 import os
+import re
 import subprocess
 import uuid
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:  # POSIX advisory locking; absent on Windows.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+
 import pandas as pd
+
+_log = logging.getLogger(__name__)
 
 RUN_LOG_COLUMNS = [
     "run_id",
@@ -48,6 +102,10 @@ RUN_LOG_COLUMNS = [
 ]
 
 VALID_STATUS = {"success", "failure"}
+
+PARTS_SUFFIX = "_parts"
+
+_UNSAFE_IN_FILENAME = re.compile(r"[^A-Za-z0-9._-]")
 
 
 @dataclass(frozen=True)
@@ -75,6 +133,8 @@ class RunRecord:
             )
         if self.duration_seconds < 0:
             raise ValueError("duration_seconds must be non-negative")
+        if not str(self.run_id).strip():
+            raise ValueError("run_id must not be empty")
 
 
 def new_run_id() -> str:
@@ -111,15 +171,51 @@ def git_sha(root: Path | None = None) -> str:
     return "unknown"
 
 
+def parts_dir(path: str | Path) -> Path:
+    """Directory holding the per-run part files for a given snapshot path."""
+    p = Path(path)
+    return p.parent / f"{p.stem}{PARTS_SUFFIX}"
+
+
+def _part_name(run_id: str) -> str:
+    """Filesystem-safe, collision-free part filename for one run_id.
+
+    The sanitised id keeps the file readable during an incident; the
+    digest of the *raw* id guarantees that two different run_ids can
+    never sanitise onto the same filename.
+    """
+    safe = _UNSAFE_IN_FILENAME.sub("-", str(run_id))[:64]
+    digest = hashlib.sha1(str(run_id).encode("utf-8")).hexdigest()[:12]
+    return f"run-{safe}-{digest}.parquet"
+
+
 def _empty_frame() -> pd.DataFrame:
     return pd.DataFrame({c: pd.Series(dtype="object") for c in RUN_LOG_COLUMNS})
 
 
-def read_runs(path: str | Path) -> pd.DataFrame:
-    """Read the audit table; an absent log is an empty log, not an error."""
-    p = Path(path)
-    if not p.exists():
-        return _empty_frame()
+def _atomic_write_parquet(df: pd.DataFrame, dest: Path) -> Path:
+    """Write `df` so that readers only ever see a complete file.
+
+    The temporary file is created in the destination directory (a rename
+    across filesystems is not atomic) and is hidden and non-`.parquet`
+    suffixed so that in-flight writes are never picked up by the
+    `*.parquet` glob or by a DuckDB directory scan.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.parent / f".{dest.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    try:
+        df.to_parquet(tmp, index=False)
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return dest
+
+
+def _read_frame(p: Path) -> pd.DataFrame:
     df = pd.read_parquet(p)
     missing = [c for c in RUN_LOG_COLUMNS if c not in df.columns]
     if missing:
@@ -127,19 +223,137 @@ def read_runs(path: str | Path) -> pd.DataFrame:
     return df[RUN_LOG_COLUMNS]
 
 
-def append_run(path: str | Path, record: RunRecord) -> Path:
-    """Append one run row to the Parquet audit table and return its path.
+def read_runs(path: str | Path) -> pd.DataFrame:
+    """Read the audit ledger; an absent ledger is an empty ledger, not an error.
 
-    Read-modify-write is deliberate: the log is small (one row per run,
-    weekly cadence) and the pipeline is single-writer, so the simplicity
-    of one self-describing Parquet file beats a partitioned layout here.
+    The parts directory is authoritative. The derived snapshot is read too,
+    but only for `run_id`s that have no part file — that is what preserves
+    history written by the pre-M13 single-file implementation (and any
+    history restored from a CI artifact) without duplicating current rows.
+    """
+    p = Path(path)
+    frames: list[pd.DataFrame] = []
+    part_ids: set[str] = set()
+
+    d = parts_dir(p)
+    if d.is_dir():
+        for f in sorted(d.glob("*.parquet")):
+            try:
+                mtime = f.stat().st_mtime_ns
+            except OSError:  # pragma: no cover - vanished between glob and stat
+                continue
+            df = _read_frame(f).copy()
+            if df.empty:
+                continue
+            df["_src"] = 1
+            df["_ord"] = mtime
+            df["_name"] = f.name
+            frames.append(df)
+            part_ids.update(df["run_id"].astype(str))
+
+    if p.is_file():
+        snapshot = _read_frame(p)
+        legacy = snapshot[~snapshot["run_id"].astype(str).isin(part_ids)].copy()
+        if not legacy.empty:
+            legacy["_src"] = 0
+            legacy["_ord"] = range(len(legacy))
+            legacy["_name"] = ""
+            frames.append(legacy)
+
+    if not frames:
+        return _empty_frame()
+
+    out = pd.concat(frames, ignore_index=True)
+    out = out.drop_duplicates(subset=["run_id"], keep="first")
+    out = out.sort_values(
+        by=["started_at_utc", "_src", "_ord", "_name"], kind="stable"
+    )
+    return out[RUN_LOG_COLUMNS].reset_index(drop=True)
+
+
+def write_part(path: str | Path, record: RunRecord) -> Path:
+    """Durably record one run as its own part file and return that file.
+
+    This is the only write that matters. It touches no other run's data,
+    so concurrent runs cannot overwrite each other. Exposed separately
+    from `append_run` so tests can interleave writes explicitly.
+    """
+    row = pd.DataFrame([asdict(record)])[RUN_LOG_COLUMNS]
+    return _atomic_write_parquet(row, parts_dir(path) / _part_name(record.run_id))
+
+
+def _snapshot_lock_path(path: str | Path) -> Path:
+    """Advisory lock file guarding rebuilds of the derived snapshot."""
+    p = Path(path)
+    return p.parent / f".{p.name}.lock"
+
+
+@contextlib.contextmanager
+def _snapshot_lock(path: str | Path) -> Iterator[None]:
+    """Serialise snapshot rebuilds across processes and threads.
+
+    Writing a part needs no coordination — each run owns its own file.
+    Rebuilding the snapshot does: it is "list the parts, then replace
+    the file", the same read-modify-write shape M13 removed from the
+    ledger itself. Two writers can each list the parts, and the one
+    that replaces the file second may be the one that listed them
+    first, so its stale frame wins and a run vanishes from the
+    snapshot while remaining durably present in the parts.
+
+    `flock` is advisory, is held per open file description (so it
+    serialises threads in one process as well as separate processes)
+    and is released by the kernel if the holder dies — which is what a
+    crashed pipeline run needs. It is POSIX-only; on Windows we fall
+    back to the previous unsynchronised behaviour, whose worst case is
+    a stale snapshot that the next `compact()` repairs.
+    """
+    if fcntl is None:  # pragma: no cover - Windows
+        yield
+        return
+    lock = _snapshot_lock_path(path)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def compact(path: str | Path) -> Path:
+    """Rebuild the derived snapshot at `path` from the parts directory.
+
+    Listing the parts and replacing the snapshot happen under
+    `_snapshot_lock`, so a concurrent rebuild cannot overwrite this
+    one with a frame that was listed earlier.
+    """
+    p = Path(path)
+    with _snapshot_lock(p):
+        return _atomic_write_parquet(read_runs(p), p)
+
+
+def append_run(path: str | Path, record: RunRecord) -> Path:
+    """Record one run, then refresh the derived snapshot; return the snapshot path.
+
+    The part write is the durable one. The snapshot refresh is a
+    convenience for the documented DuckDB one-liner and the CI artifact,
+    so a snapshot failure is logged and swallowed: the run is already
+    recorded, and `compact()` can rebuild the snapshot at any time.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    existing = read_runs(p)
-    row = pd.DataFrame([asdict(record)])[RUN_LOG_COLUMNS]
-    combined = row if existing.empty else pd.concat([existing, row], ignore_index=True)
-    combined.to_parquet(p, index=False)
+    write_part(p, record)
+    try:
+        compact(p)
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.warning(
+            "run log snapshot refresh failed (run is still recorded in %s): %s",
+            parts_dir(p),
+            exc,
+        )
     return p
 
 

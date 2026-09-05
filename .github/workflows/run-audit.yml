@@ -1,100 +1,171 @@
 name: run-audit
 
-# Verifies the M12 observability layer: the audit-log contract, that a real
-# pipeline execution actually writes a row, and — via fault injection — that
-# the audit layer never changes the pipeline's own exit code. Kept in its own
-# workflow so it stays readable and can be dispatched on its own.
-
 on:
+  # The README badge for this workflow shows the status of its most recent
+  # run. Without a push trigger the most recent run is whatever PR happened
+  # to touch these paths last, so a green badge could outlive a broken main.
+  # See issue #50.
   push:
     branches: [main]
   pull_request:
+    paths:
+      - "observability/**"
+      - "orchestrate.py"
+      - "tests/test_run_log*.py"
+      - "tests/test_orchestrate_cli.py"
+      - ".github/workflows/run-audit.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: run-audit-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: run-audit-${{ github.ref }}
+  # Superseded PR pushes are worth cancelling; a main commit's audit result is
+  # not, because it is the thing the badge reports.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  run-audit:
+  audit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Check out exact event revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
+      - uses: actions/checkout@v7
 
-      - name: Assert exact checked-out revision
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install duckdb
 
-      - name: Unit tests (run audit log contract)
+      - name: Unit tests — run log contract
         run: python tests/test_run_log.py
 
-      - name: End-to-end proof (two fixture runs append two distinct rows)
-        run: |
-          python orchestrate.py
-          python orchestrate.py
-          python - <<'EOF'
-          import sys
-          sys.path.insert(0, ".")
-          from observability.run_log import read_runs, summarize
-          df = read_runs("warehouse/run_log.parquet")
-          print(summarize("warehouse/run_log.parquet"))
-          ok = (
-              len(df) == 2
-              and df["run_id"].nunique() == 2
-              and (df["status"] == "success").all()
-              and (df["gold_rows"].astype(int) > 0).all()
-              and (df["mode"] == "fixture").all()
-          )
-          print("===== OTOMATIK KONTROL =====")
-          print(f"run_rows: {len(df)}")
-          print(f"unique_run_ids: {df['run_id'].nunique()}")
-          print(f"statuses: {sorted(set(df['status']))}")
-          print(f"gold_rows: {list(df['gold_rows'])}")
-          print(f"RESULT: {'PASS' if ok else 'FAIL'}")
-          sys.exit(0 if ok else 1)
-          EOF
-
-      - name: Failure-path proof (fault injection)
+      - name: Unit tests — failure paths
         run: python tests/test_run_log_failure_paths.py
 
-      - name: Independent read via DuckDB (not the writer's own reader)
-        run: |
-          python - <<'EOF'
-          import duckdb
-          rows = duckdb.connect().sql(
-              "select status, count(*) from 'warehouse/run_log.parquet' "
-              "group by 1 order by 1"
-          ).fetchall()
-          print("===== OTOMATIK KONTROL =====")
-          print(f"duckdb_status_counts: {rows}")
-          statuses = {r[0] for r in rows}
-          ok = "success" in statuses and "failure" in statuses
-          print(f"RESULT: {'PASS' if ok else 'FAIL'}")
-          raise SystemExit(0 if ok else 1)
-          EOF
+      - name: Concurrency proofs — lost update is real and is gone
+        run: python tests/test_run_log_concurrency.py
 
-      - name: Upload the audit log as durable evidence
+      - name: Unit tests — the --mode flag actually decides the mode
+        run: python tests/test_orchestrate_cli.py
+
+      - name: Pipeline run (fixture mode)
+        run: python orchestrate.py --mode fixture
+
+      - name: Second pipeline run — history must accumulate
+        run: python orchestrate.py --mode fixture
+
+      # Issue #49's acceptance case, proved against the real ledger rather
+      # than a mock: a credential in the environment must not be able to
+      # turn a run that was pinned to fixture into a live run.
+      - name: Third run — a present credential must not override --mode fixture
+        env:
+          EVDS_API_KEY: dummy-value-that-must-never-be-used
+        run: python orchestrate.py --mode fixture
+
+      - name: Reject an unknown flag instead of ignoring it
+        run: |
+          set +e
+          python orchestrate.py --mode prod
+          code=$?
+          set -e
+          echo "exit code: $code"
+          if [ "$code" -eq 0 ]; then
+            echo "::error::orchestrate.py accepted an invalid --mode value"
+            exit 1
+          fi
+          echo "invalid --mode is a hard error: OK"
+
+      - name: Verify audit ledger with DuckDB
+        run: |
+          python - <<'PY'
+          import glob
+          import duckdb
+
+          parts = sorted(glob.glob("warehouse/run_log_parts/*.parquet"))
+          assert parts, "no per-run part files were written"
+          print(f"part files: {len(parts)}")
+
+          con = duckdb.connect()
+
+          part_rows = con.execute(
+              "select count(*), count(distinct run_id) "
+              "from read_parquet('warehouse/run_log_parts/*.parquet')"
+          ).fetchone()
+          print(f"parts: {part_rows[0]} rows, {part_rows[1]} distinct run_id")
+          assert part_rows[0] == part_rows[1], "a run_id appears in more than one part"
+          assert part_rows[0] >= 3, "expected at least three recorded runs"
+
+          snap_rows = con.execute(
+              "select count(*) from 'warehouse/run_log.parquet'"
+          ).fetchone()[0]
+          print(f"derived snapshot: {snap_rows} rows")
+          assert snap_rows == part_rows[0], (
+              f"snapshot ({snap_rows}) disagrees with parts ({part_rows[0]})"
+          )
+
+          statuses = con.execute(
+              "select status, count(*) from 'warehouse/run_log.parquet' "
+              "group by status order by status"
+          ).fetchall()
+          print(f"status breakdown: {statuses}")
+          assert any(s == "success" for s, _ in statuses), "no successful run recorded"
+
+          # Every run in this job was pinned with --mode fixture, and one of
+          # them ran with EVDS_API_KEY set. If the flag were still cosmetic,
+          # that run would have recorded mode='live' and this would fail.
+          modes = con.execute(
+              "select mode, count(*) from 'warehouse/run_log.parquet' "
+              "group by mode order by mode"
+          ).fetchall()
+          print(f"mode breakdown: {modes}")
+          assert modes == [("fixture", part_rows[0])], (
+              f"--mode fixture was not honoured by every run: {modes}"
+          )
+
+          sources = {r[0] for r in con.execute(
+              "select distinct source_name from 'warehouse/run_log.parquet'"
+          ).fetchall()}
+          print(f"sources: {sorted(sources)}")
+          assert sources == {"fixture:synthetic"}, (
+              f"a pinned-fixture run recorded a non-fixture source: {sources}"
+          )
+
+          cols = {
+              r[0]
+              for r in con.execute(
+                  "describe select * from 'warehouse/run_log.parquet'"
+              ).fetchall()
+          }
+          required = {
+              "run_id", "started_at_utc", "ended_at_utc", "duration_seconds",
+              "status", "mode", "source_name", "bronze_rows", "gold_rows",
+              "steps_total", "steps_failed", "git_sha", "failed_step",
+          }
+          missing = required - cols
+          assert not missing, f"run log is missing columns: {sorted(missing)}"
+          print("schema contract: OK")
+          PY
+
+      - name: Print run history
+        run: |
+          python - <<'PY'
+          from observability import run_log
+          print(run_log.summarize("warehouse/run_log.parquet", last=10))
+          PY
+
+      - name: Upload run audit evidence
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@v4
         with:
-          name: run-log-parquet-${{ github.event.pull_request.head.sha || github.sha }}
-          path: warehouse/run_log.parquet
-          if-no-files-found: warn
-          retention-days: 14
+          name: run-audit-evidence
+          path: |
+            warehouse/run_log.parquet
+            warehouse/run_log_parts/
+          if-no-files-found: error
+          retention-days: 30

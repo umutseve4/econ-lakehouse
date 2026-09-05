@@ -9,14 +9,17 @@ pipeline has a durable operational history instead of only console output.
 
 Used as the Docker container entrypoint and runnable locally:
 
-    EVDS_API_KEY=... python orchestrate.py          # live mode
-    python orchestrate.py                           # fixture mode
+    EVDS_API_KEY=... python orchestrate.py          # live mode (auto)
+    python orchestrate.py                           # fixture mode (auto)
+    python orchestrate.py --mode fixture            # fixture, even with a key
+    EVDS_API_KEY=... python orchestrate.py --mode live
 
 Exit code 0 = all steps passed; non-zero = first failing step.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -39,7 +42,67 @@ BRONZE = ROOT / "warehouse" / "bronze"
 PROVENANCE = ROOT / "warehouse" / "provenance.json"
 RUN_LOG = ROOT / "warehouse" / "run_log.parquet"
 
+FIXTURE_SOURCE = "fixture:synthetic"
+LIVE_SOURCE = "evds:TP.FG.J0"
+
 RESULTS: list[tuple[str, str, float]] = []  # (step, PASS/FAIL, seconds)
+
+
+class ModeError(SystemExit):
+    """Requested mode cannot be honoured. Fail fast, never silently downgrade."""
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """CLI surface.
+
+    This exists because `--mode fixture` was previously accepted and ignored:
+    the flag appeared in CI, looked like an explicit guarantee, and decided
+    nothing. Unknown arguments are rejected by argparse, so a future typo is
+    a hard error instead of a silent no-op.
+    """
+    p = argparse.ArgumentParser(
+        prog="orchestrate.py",
+        description="Run the econ-lakehouse pipeline and record the run.",
+    )
+    p.add_argument(
+        "--mode",
+        choices=("auto", "fixture", "live"),
+        default="auto",
+        help=(
+            "auto (default): live when EVDS_API_KEY is set, else fixture. "
+            "fixture: force the synthetic fixture even when a key is present. "
+            "live: require a key and fail fast if it is missing."
+        ),
+    )
+    return p
+
+
+def resolve_mode(requested: str, api_key: str) -> tuple[str, str]:
+    """Turn (requested mode, credential presence) into (mode, source_name).
+
+    Pure: no environment reads, no I/O. The returned mode is the one that is
+    actually executed *and* the one written to the ledger's `mode` column, so
+    the ledger can never disagree with what ran.
+    """
+    key = (api_key or "").strip()
+
+    if requested == "fixture":
+        # Deliberately ignores the key. A run pinned to fixture must stay
+        # deterministic even in an environment that happens to hold a secret.
+        return "fixture", FIXTURE_SOURCE
+
+    if requested == "live":
+        if not key:
+            raise ModeError(
+                "--mode live requires EVDS_API_KEY to be set. Refusing to fall "
+                "back to the synthetic fixture, because a run that silently "
+                "downgrades would be recorded as live-shaped evidence of "
+                "nothing. Set the secret, or use --mode fixture."
+            )
+        return "live", LIVE_SOURCE
+
+    # auto
+    return ("live", LIVE_SOURCE) if key else ("fixture", FIXTURE_SOURCE)
 
 
 def run_step(name: str, argv: list[str], env: dict | None = None) -> None:
@@ -104,8 +167,21 @@ def _record_run(
         log.warning("run log write failed (non-fatal): %s", exc)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+
     sys.path.insert(0, str(ROOT))
+
+    # Resolved before any work, so `--mode live` without a key costs nothing
+    # and leaves no half-built warehouse behind.
+    mode, source_name = resolve_mode(args.mode, os.environ.get("EVDS_API_KEY", ""))
+    if args.mode == "fixture" and os.environ.get("EVDS_API_KEY", "").strip():
+        log.warning(
+            "--mode fixture: EVDS_API_KEY is present but will not be used; "
+            "this run is pinned to the synthetic fixture."
+        )
+    log.info("mode: requested=%s resolved=%s source=%s",
+             args.mode, mode, source_name)
 
     # Guarded: if the observability layer cannot even be imported, the
     # pipeline still runs — it just runs without an audit row.
@@ -120,14 +196,11 @@ def main() -> int:
         started_at = ""
     t0 = time.monotonic()
 
-    api_key = os.environ.get("EVDS_API_KEY", "").strip()
-    mode = "live" if api_key else "fixture"
-    source_name = "evds:TP.FG.J0" if api_key else "fixture:synthetic"
     bronze_rows = 0
     gold_rows = 0
 
     try:
-        if api_key:
+        if mode == "live":
             source_csv = "data/evds/cpi_evds.csv"
             run_step(
                 "fetch-evds-live",
@@ -135,7 +208,7 @@ def main() -> int:
                  "--series", "TP.FG.J0", "--start", "2015-01", "--out", source_csv],
             )
         else:
-            log.warning("EVDS_API_KEY not set -> using synthetic fixture (NOT real data)")
+            log.warning("running in fixture mode -> synthetic data (NOT real data)")
             source_csv = "data/sample/cpi_fixture.csv"
 
         ingest_cmd = [
@@ -209,6 +282,7 @@ def main() -> int:
     print("===== OTOMATIK KONTROL =====")
     for step, status, dt in RESULTS:
         print(f"{step}: {status}" + (f" ({dt:.1f}s)" if dt else ""))
+    print(f"requested_mode: {args.mode}")
     print(f"source: {source_name}")
     print(f"provenance: {mode}")
     print(f"gold_rows: {gold_rows}")
