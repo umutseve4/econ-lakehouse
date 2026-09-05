@@ -1,11 +1,18 @@
 name: run-audit
 
 on:
+  # The README badge for this workflow shows the status of its most recent
+  # run. Without a push trigger the most recent run is whatever PR happened
+  # to touch these paths last, so a green badge could outlive a broken main.
+  # See issue #50.
+  push:
+    branches: [main]
   pull_request:
     paths:
       - "observability/**"
       - "orchestrate.py"
       - "tests/test_run_log*.py"
+      - "tests/test_orchestrate_cli.py"
       - ".github/workflows/run-audit.yml"
   workflow_dispatch:
 
@@ -14,18 +21,20 @@ permissions:
 
 concurrency:
   group: run-audit-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR pushes are worth cancelling; a main commit's audit result is
+  # not, because it is the thing the badge reports.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -42,11 +51,35 @@ jobs:
       - name: Concurrency proofs — lost update is real and is gone
         run: python tests/test_run_log_concurrency.py
 
+      - name: Unit tests — the --mode flag actually decides the mode
+        run: python tests/test_orchestrate_cli.py
+
       - name: Pipeline run (fixture mode)
         run: python orchestrate.py --mode fixture
 
       - name: Second pipeline run — history must accumulate
         run: python orchestrate.py --mode fixture
+
+      # Issue #49's acceptance case, proved against the real ledger rather
+      # than a mock: a credential in the environment must not be able to
+      # turn a run that was pinned to fixture into a live run.
+      - name: Third run — a present credential must not override --mode fixture
+        env:
+          EVDS_API_KEY: dummy-value-that-must-never-be-used
+        run: python orchestrate.py --mode fixture
+
+      - name: Reject an unknown flag instead of ignoring it
+        run: |
+          set +e
+          python orchestrate.py --mode prod
+          code=$?
+          set -e
+          echo "exit code: $code"
+          if [ "$code" -eq 0 ]; then
+            echo "::error::orchestrate.py accepted an invalid --mode value"
+            exit 1
+          fi
+          echo "invalid --mode is a hard error: OK"
 
       - name: Verify audit ledger with DuckDB
         run: |
@@ -66,7 +99,7 @@ jobs:
           ).fetchone()
           print(f"parts: {part_rows[0]} rows, {part_rows[1]} distinct run_id")
           assert part_rows[0] == part_rows[1], "a run_id appears in more than one part"
-          assert part_rows[0] >= 2, "expected at least two recorded runs"
+          assert part_rows[0] >= 3, "expected at least three recorded runs"
 
           snap_rows = con.execute(
               "select count(*) from 'warehouse/run_log.parquet'"
@@ -82,6 +115,26 @@ jobs:
           ).fetchall()
           print(f"status breakdown: {statuses}")
           assert any(s == "success" for s, _ in statuses), "no successful run recorded"
+
+          # Every run in this job was pinned with --mode fixture, and one of
+          # them ran with EVDS_API_KEY set. If the flag were still cosmetic,
+          # that run would have recorded mode='live' and this would fail.
+          modes = con.execute(
+              "select mode, count(*) from 'warehouse/run_log.parquet' "
+              "group by mode order by mode"
+          ).fetchall()
+          print(f"mode breakdown: {modes}")
+          assert modes == [("fixture", part_rows[0])], (
+              f"--mode fixture was not honoured by every run: {modes}"
+          )
+
+          sources = {r[0] for r in con.execute(
+              "select distinct source_name from 'warehouse/run_log.parquet'"
+          ).fetchall()}
+          print(f"sources: {sorted(sources)}")
+          assert sources == {"fixture:synthetic"}, (
+              f"a pinned-fixture run recorded a non-fixture source: {sources}"
+          )
 
           cols = {
               r[0]
