@@ -17,6 +17,11 @@ This file is deliberately structured as *proof*, not as reassurance:
 4. `prove_retried_write_does_not_duplicate` re-records one run_id.
 5. `prove_concurrent_processes_all_survive` starts 12 real OS processes
    released by a shared wall-clock barrier and requires all 12 rows.
+6. `prove_snapshot_survives_forced_interleaving` forces the single
+   interleaving that made check 5 fail intermittently on CI: a snapshot
+   rebuild lists the parts, is overtaken by a second writer that
+   completes entirely, and only then replaces the file. Check 5 catches
+   that race by luck; this one catches it every time.
 
 Run directly (`python tests/test_run_log_concurrency.py`) or under
 pytest; every check prints PASS/FAIL and the script exits non-zero on the
@@ -29,6 +34,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -290,6 +296,70 @@ def prove_concurrent_processes_all_survive(workers: int = 12) -> None:
         )
 
 
+# --------------------------------------------------------------------------
+# 6. The snapshot rebuild is itself a read-modify-write — forced, not hoped for.
+# --------------------------------------------------------------------------
+
+def prove_snapshot_survives_forced_interleaving() -> None:
+    print("\n6. snapshot rebuild overtaken by a complete second writer")
+    expected = {"run-0001", "run-0002", "run-0003"}
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = Path(tmp) / "run_log.parquet"
+        run_log.append_run(ledger, make_record(1))
+        run_log.write_part(ledger, make_record(2))
+
+        listed = threading.Event()   # A has listed the parts
+        overtaken = threading.Event()  # B has finished its whole append
+        armed = threading.Event()
+        armed.set()
+        real_write = run_log._atomic_write_parquet
+
+        def stalled_write(df, dest):
+            # Stall writer A once, after read_runs() and before os.replace().
+            if (
+                dest == ledger
+                and armed.is_set()
+                and threading.current_thread().name == "A"
+            ):
+                armed.clear()
+                listed.set()
+                # With the lock in place B cannot get past write_part, so
+                # this wait times out: the timeout expiring IS the proof
+                # that the two rebuilds were serialised.
+                overtaken.wait(timeout=5.0)
+            return real_write(df, dest)
+
+        def writer_b():
+            listed.wait(timeout=60.0)
+            run_log.append_run(ledger, make_record(3))
+            overtaken.set()
+
+        run_log._atomic_write_parquet = stalled_write
+        try:
+            a = threading.Thread(target=run_log.compact, args=(ledger,), name="A")
+            b = threading.Thread(target=writer_b, name="B")
+            a.start()
+            b.start()
+            a.join(timeout=120)
+            b.join(timeout=120)
+        finally:
+            run_log._atomic_write_parquet = real_write
+
+        parts = set(run_log.read_runs(ledger)["run_id"])
+        check(
+            "parts survive the forced interleaving",
+            parts == expected,
+            f"ledger contains {sorted(parts)}",
+        )
+
+        snapshot = set(pd.read_parquet(ledger)["run_id"])
+        check(
+            "derived snapshot survives a rebuild that was overtaken",
+            snapshot == expected,
+            f"snapshot contains {sorted(snapshot)}",
+        )
+
+
 def test_run_log_concurrency() -> None:
     """pytest entry point — same proofs, one assertion."""
     main()
@@ -301,6 +371,7 @@ def main() -> int:
     prove_pre_m13_history_is_preserved()
     prove_retried_write_does_not_duplicate()
     prove_concurrent_processes_all_survive()
+    prove_snapshot_survives_forced_interleaving()
 
     print()
     if FAILURES:
