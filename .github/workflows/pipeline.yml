@@ -30,6 +30,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # requirements.txt pins floors, not exact versions, so two clean
+      # installs of the same commit can resolve different HTTP stacks. When
+      # a live-fetch step fails, "was the resolved stack the same?" is the
+      # first question worth asking, and it is unanswerable after the fact
+      # unless the answer was recorded. Never gates CI.
+      - name: Resolved HTTP stack inventory (diagnostic, never gates CI)
+        continue-on-error: true
+        run: |
+          python -m pip list 2>&1 \
+            | grep -Ei '^(fastapi|starlette|anyio|httpx|httpcore|requests|urllib3|uvicorn) ' \
+            | tee /tmp/deps.txt
+
       - name: Unit tests (bronze contract)
         run: python tests/test_ingest.py
 
@@ -39,6 +51,12 @@ jobs:
       - name: Unit tests (storage abstraction)
         run: python tests/test_storage.py
 
+      # A single-attempt live HTTP call turns a momentary upstream blip into
+      # a red main: this step failed here on a912a76e after 31s while its
+      # parent passed the same call in 1s. Retry with backoff and print the
+      # attempt count, so a retried success stays visible. Three consecutive
+      # failures still fail the job -- a real, reproducible breakage is not
+      # swallowed, and no partial SOURCE_* state is exported on failure.
       - name: Fetch real CPI from EVDS (only when secret configured)
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
@@ -48,9 +66,25 @@ jobs:
             echo "SOURCE_CSV=data/sample/cpi_fixture.csv" >> "$GITHUB_ENV"
             echo "SOURCE_NAME=fixture:synthetic" >> "$GITHUB_ENV"
           else
-            python ingest/evds_client.py --series TP.FG.J0 --start 2015-01 --out data/evds/cpi_evds.csv
-            echo "SOURCE_CSV=data/evds/cpi_evds.csv" >> "$GITHUB_ENV"
-            echo "SOURCE_NAME=evds:TP.FG.J0" >> "$GITHUB_ENV"
+            for attempt in 1 2 3; do
+              echo "evds_fetch_attempt: $attempt"
+              if python ingest/evds_client.py --series TP.FG.J0 --start 2015-01 --out data/evds/cpi_evds.csv; then
+                echo "SOURCE_CSV=data/evds/cpi_evds.csv" >> "$GITHUB_ENV"
+                echo "SOURCE_NAME=evds:TP.FG.J0" >> "$GITHUB_ENV"
+                echo "===== OTOMATIK KONTROL ====="
+                echo "evds_fetch_attempts_used: $attempt"
+                echo "RESULT: PASS"
+                exit 0
+              fi
+              echo "evds fetch attempt $attempt failed"
+              if [ "$attempt" -lt 3 ]; then
+                sleep $((attempt * 10))
+              fi
+            done
+            echo "===== OTOMATIK KONTROL ====="
+            echo "evds_fetch_attempts_used: 3"
+            echo "RESULT: FAIL (three consecutive EVDS fetch failures - not transient)"
+            exit 1
           fi
 
       - name: EVDS freshness probe (diagnostic, never gates CI)
@@ -142,6 +176,11 @@ jobs:
               '### Gold mart lag',
               '```',
               read('/tmp/goldlag.txt'),
+              '```',
+              '',
+              '### Resolved HTTP stack',
+              '```',
+              read('/tmp/deps.txt'),
               '```',
             ].join('\n');
             await github.rest.issues.createComment({
