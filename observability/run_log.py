@@ -31,6 +31,14 @@ and the CI artifact contract keep working unchanged. It is rebuilt from
 the parts on every append and is always safe to delete or regenerate with
 `compact()`. Losing it loses nothing: the parts are the ledger.
 
+Rebuilding that snapshot is itself a read-modify-write — list the
+parts, then replace the file — so two rebuilds overlapping between the
+list and the replace leave a snapshot that is missing a run which *is*
+durably present in the parts. No audit row is lost, but the documented
+one-liner, the CI artifact and the evidence page all read the snapshot,
+so they would silently under-report. `compact()` therefore holds an
+exclusive advisory lock across the list-and-replace.
+
 Why this replaces the previous read-modify-write append
 -------------------------------------------------------
 The earlier implementation read the whole Parquet file, concatenated one
@@ -56,15 +64,22 @@ Design notes
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
 import re
 import subprocess
 import uuid
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:  # POSIX advisory locking; absent on Windows.
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
 
 import pandas as pd
 
@@ -267,10 +282,57 @@ def write_part(path: str | Path, record: RunRecord) -> Path:
     return _atomic_write_parquet(row, parts_dir(path) / _part_name(record.run_id))
 
 
-def compact(path: str | Path) -> Path:
-    """Rebuild the derived snapshot at `path` from the parts directory."""
+def _snapshot_lock_path(path: str | Path) -> Path:
+    """Advisory lock file guarding rebuilds of the derived snapshot."""
     p = Path(path)
-    return _atomic_write_parquet(read_runs(p), p)
+    return p.parent / f".{p.name}.lock"
+
+
+@contextlib.contextmanager
+def _snapshot_lock(path: str | Path) -> Iterator[None]:
+    """Serialise snapshot rebuilds across processes and threads.
+
+    Writing a part needs no coordination — each run owns its own file.
+    Rebuilding the snapshot does: it is "list the parts, then replace
+    the file", the same read-modify-write shape M13 removed from the
+    ledger itself. Two writers can each list the parts, and the one
+    that replaces the file second may be the one that listed them
+    first, so its stale frame wins and a run vanishes from the
+    snapshot while remaining durably present in the parts.
+
+    `flock` is advisory, is held per open file description (so it
+    serialises threads in one process as well as separate processes)
+    and is released by the kernel if the holder dies — which is what a
+    crashed pipeline run needs. It is POSIX-only; on Windows we fall
+    back to the previous unsynchronised behaviour, whose worst case is
+    a stale snapshot that the next `compact()` repairs.
+    """
+    if fcntl is None:  # pragma: no cover - Windows
+        yield
+        return
+    lock = _snapshot_lock_path(path)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def compact(path: str | Path) -> Path:
+    """Rebuild the derived snapshot at `path` from the parts directory.
+
+    Listing the parts and replacing the snapshot happen under
+    `_snapshot_lock`, so a concurrent rebuild cannot overwrite this
+    one with a frame that was listed earlier.
+    """
+    p = Path(path)
+    with _snapshot_lock(p):
+        return _atomic_write_parquet(read_runs(p), p)
 
 
 def append_run(path: str | Path, record: RunRecord) -> Path:
