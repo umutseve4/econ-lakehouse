@@ -90,12 +90,21 @@ page's own embedded timestamp, which is what makes it survive the pipeline being
 dead. A static page cannot notice its own staleness server-side; this one does it
 client-side instead.
 
-> **Currently not operational.** GitHub Pages is disabled for this repository, so
-> the page is rendered and verified on every run but never published. Until an
-> administrator enables it (**Settings → Pages → Build and deployment → Source:
-> GitHub Actions**), this detector exists in code and is unreachable in practice.
-> The `pages-preflight` job reports this in the run summary and skips `publish`
-> rather than failing every run for a cause no code change can fix.
+> **Operational since 2026-09-05.** GitHub Pages is enabled for this repository
+> (**Settings → Pages → Build and deployment → Source: GitHub Actions**) and the
+> page is published at <https://umutseve4.github.io/econ-lakehouse/>. First
+> published render: source commit `99c14827`, generated `2026-09-05T00:40:31Z`,
+> confirmed by fetching the live page rather than by trusting the deploy step's
+> exit code. `pages-preflight` now reports `enabled=true` and `publish` no longer
+> skips.
+>
+> This paragraph previously said the detector was unreachable, which was true
+> from M14 until Pages was switched on. It is left described here rather than
+> deleted, because the mechanism still applies: if Pages is ever disabled again,
+> `pages-preflight` returns to reporting the disabled state in the run summary
+> and skipping `publish`, rather than failing every run for a cause no code
+> change can fix. The detector would then exist in code and be unreachable in
+> practice — exactly as before.
 
 **2. GitHub's warning email — real, but not a guarantee.** GitHub does send a
 "workflow will be disabled soon" notice, and community reports put it at roughly
