@@ -27,6 +27,18 @@ on:
     # on GitHub's shared runners is worst.
     - cron: "23 5 * * *"
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: >-
+          normal: run the pipeline exactly as the schedule does.
+          controlled-failure: break the bronze source contract on purpose,
+          to prove a failure is detected, recorded and published.
+        type: choice
+        options:
+          - normal
+          - controlled-failure
+        default: normal
+        required: false
   repository_dispatch:
     types: [publish-evidence]
   pull_request:
@@ -180,6 +192,40 @@ jobs:
             cp .evidence/run_log_parts/*.parquet warehouse/run_log_parts/
           fi
           echo "restored $(find warehouse/run_log_parts -name '*.parquet' | wc -l) part file(s)"
+
+      # A pipeline that has only ever been seen to pass has not been shown
+      # to detect anything. This step breaks the bronze source contract the
+      # way a real upstream break does -- the publisher renames a column --
+      # and does nothing else: no flag inside the pipeline, no mock, no
+      # forced `exit 1` bolted onto the end. `ingest/ingest.py` raises
+      # ValidationError("missing columns: ['index_value']"), so
+      # `orchestrate.py` records status=failure with
+      # failed_step=ingest-bronze through its normal path, and `report`
+      # below fails the run. A drill that faked the failure would prove
+      # only that a fake can be faked.
+      #
+      # It edits the runner's checkout, which is thrown away; nothing is
+      # pushed, so the committed fixture is untouched. Recovery is a second
+      # manual run with scenario=normal: the page's headline state is
+      # derived from the newest run (evidence/render.py, summarize_window),
+      # so it returns to RECORDED, while the failed row stays visible in
+      # the 14-day table and in the success-rate denominator -- which is
+      # the whole point of running the drill in public.
+      - name: Controlled failure drill -- break the source contract
+        if: github.event_name == 'workflow_dispatch' && inputs.scenario == 'controlled-failure'
+        run: |
+          set -euo pipefail
+          fixture=data/sample/cpi_fixture.csv
+          test -f "$fixture"
+          head -1 "$fixture" | grep -qw 'index_value'
+          sed -i '1s/\bindex_value\b/index_value_2015_100/' "$fixture"
+          head -1 "$fixture" | grep -q 'index_value_2015_100'
+          if head -1 "$fixture" | grep -qw 'index_value'; then
+            echo "drill did not take effect; refusing to run a fake failure" >&2
+            exit 2
+          fi
+          echo "header is now: $(head -1 "$fixture")"
+          echo "::warning::Controlled failure drill armed: bronze source contract broken on purpose."
 
       # Fixture mode is stated, not inferred. It used to rest on a negative
       # — no step here maps EVDS_API_KEY, so the orchestrator fell through
