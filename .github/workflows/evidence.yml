@@ -287,11 +287,15 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # GitHub Pages must be enabled by a repository administrator
-  # (Settings -> Pages -> Source: GitHub Actions). Until that happens,
-  # deploying is impossible, so the publish job is skipped with a loud
-  # message rather than failing every scheduled run for a reason no code
-  # change can fix.
+  # Publishing needs GitHub Pages enabled for the repository
+  # (Settings -> Pages -> Build and deployment -> Source: GitHub Actions).
+  # That was done on 2026-09-05, so `publish` now runs. The preflight stays,
+  # because the setting can be switched off again at any time from the UI and
+  # no code change can compensate for it: the job then skips with a loud
+  # run-summary message instead of failing every scheduled run for a cause
+  # outside the repository. Skipping here never hides a pipeline failure --
+  # `report` only requires a successful `publish` when this job reports
+  # enabled=true, and it fails on a bad pipeline run regardless.
   pages-preflight:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
