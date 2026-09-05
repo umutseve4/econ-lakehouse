@@ -271,8 +271,33 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The docker.io pull behind `FROM python:3.12-slim` failed twice on
+      # 2026-09-05 (runs 33961541818 and 33962425508) and then succeeded
+      # unchanged on the very same commit (33963155770) — a transient
+      # registry fault, not a defect in this repository. See #60. A
+      # single-attempt build turns somebody else's outage into a red main.
+      # Retry with backoff, and print the attempt count so a retried build
+      # stays visible in the log instead of silently papering over a real,
+      # reproducible breakage. Three consecutive failures still fail the job.
       - name: Build image
-        run: docker build -t econ-lakehouse .
+        run: |
+          for attempt in 1 2 3; do
+            echo "build_attempt: $attempt"
+            if docker build -t econ-lakehouse .; then
+              echo "===== OTOMATIK KONTROL ====="
+              echo "build_attempts_used: $attempt"
+              echo "RESULT: PASS"
+              exit 0
+            fi
+            echo "build attempt $attempt failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 10))
+            fi
+          done
+          echo "===== OTOMATIK KONTROL ====="
+          echo "build_attempts_used: 3"
+          echo "RESULT: FAIL (three consecutive build failures - not transient)"
+          exit 1
 
       - name: Report image size
         run: |
@@ -285,10 +310,23 @@ jobs:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
         run: |
           if [ -z "$EVDS_API_KEY" ]; then
-            docker run --rm econ-lakehouse
+            echo "run_mode: fixture (EVDS_API_KEY absent)"
+            docker run --rm econ-lakehouse 2>&1 | tee /tmp/container.log
           else
-            docker run --rm -e EVDS_API_KEY econ-lakehouse
+            echo "run_mode: live (EVDS_API_KEY present)"
+            docker run --rm -e EVDS_API_KEY econ-lakehouse 2>&1 | tee /tmp/container.log
           fi
+          code=${PIPESTATUS[0]}
+          echo "===== OTOMATIK KONTROL ====="
+          echo "container_exit_code: $code"
+          if [ "$code" -eq 0 ]; then
+            echo "RESULT: PASS"
+          else
+            echo "RESULT: FAIL"
+            echo "--- last 40 lines of container output ---"
+            tail -n 40 /tmp/container.log
+          fi
+          exit "$code"
 
   alert-on-failure:
     # Opens a GitHub issue when a scheduled run fails, so silent breakage
