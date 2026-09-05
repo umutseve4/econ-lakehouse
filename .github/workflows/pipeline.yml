@@ -14,16 +14,32 @@ on:
 permissions:
   contents: read
 
+# Supersede in-flight runs for the same pull request only. Pushes to main and
+# scheduled runs are never cancelled: those are the runs whose result is the
+# record of what main actually does.
+concurrency:
+  group: pipeline-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ingest-and-transform:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      # A merge-commit checkout tests code that exists nowhere and that nobody
+      # reviewed. Check out the exact event revision and prove it, so a green
+      # check is a statement about a specific SHA.
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -154,41 +170,21 @@ jobs:
           print(f"RESULT: {'PASS' if lag <= 3 else 'WARN (stale beyond 3 months)'}")
           EOF
 
-      - name: Publish diagnostics back onto the pull request
-        if: github.event_name == 'pull_request'
+      # This job checks out and executes repository-controlled code, so it must
+      # not hold a write-scoped token. Hand the diagnostics to an isolated
+      # writer job as a SHA-qualified artifact instead of commenting from here.
+      - name: Package pull-request diagnostics
+        if: always() && github.event_name == 'pull_request'
         continue-on-error: true
-        uses: actions/github-script@v9
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          script: |
-            const fs = require('fs');
-            const read = (p) => {
-              try { return fs.readFileSync(p, 'utf8').slice(0, 55000); }
-              catch (e) { return `(no output captured: ${p})`; }
-            };
-            const body = [
-              '## M11 diagnostics (automated)',
-              '',
-              '### EVDS freshness probe',
-              '```',
-              read('/tmp/freshness.txt'),
-              '```',
-              '',
-              '### Gold mart lag',
-              '```',
-              read('/tmp/goldlag.txt'),
-              '```',
-              '',
-              '### Resolved HTTP stack',
-              '```',
-              read('/tmp/deps.txt'),
-              '```',
-            ].join('\n');
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body,
-            });
+          name: pipeline-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            /tmp/freshness.txt
+            /tmp/goldlag.txt
+            /tmp/deps.txt
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Snapshot test (late-revision history, SCD Type 2)
         env:
@@ -221,15 +217,100 @@ jobs:
             echo "RESULT: FAIL"; exit 1
           fi
 
+  publish-pr-diagnostics:
+    # The only job in this workflow holding `pull-requests: write`. It never
+    # checks out the repository and runs no `run:` step, so no PR-controlled
+    # code can execute next to the write-scoped token.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: ingest-and-transform
+    if: always() && github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download diagnostics from the unprivileged runner
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pipeline-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
+          path: diagnostics
+
+      - name: Publish bounded diagnostics onto the pull request
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            // Three sections now share one comment, and GitHub rejects a body
+            // over 65536 characters. 3 x 20000 + headings stays under it with
+            // room to spare, so the bound is enforced per section AND overall.
+            const MAX_SECTION = 20000;
+            const TRUNCATED = '    ... [truncated]\n';
+            const format = (raw) => {
+              const normalized = raw.replace(/\r/g, '');
+              let output = '';
+              for (const line of normalized.split('\n')) {
+                const candidate = `    ${line}\n`;
+                if (output.length + candidate.length > MAX_SECTION - TRUNCATED.length) {
+                  output += TRUNCATED;
+                  break;
+                }
+                output += candidate;
+              }
+              return output;
+            };
+            const read = (file) => {
+              try { return format(fs.readFileSync(path.join('diagnostics', file), 'utf8')); }
+              catch (error) { return `    (no output captured: ${file})\n`; }
+            };
+            // Prove the bound holds before writing anything: a formatter that
+            // silently stops truncating would turn a diagnostic into a 500.
+            const stress = format('x\n'.repeat(55000));
+            if (stress.length > MAX_SECTION || !stress.includes('[truncated]')) {
+              throw new Error('diagnostic formatter boundary check failed');
+            }
+            const body = [
+              '## M11 diagnostics (automated)',
+              '',
+              '### EVDS freshness probe',
+              read('freshness.txt'),
+              '',
+              '### Gold mart lag',
+              read('goldlag.txt'),
+              '',
+              '### Resolved HTTP stack',
+              read('deps.txt'),
+            ].join('\n');
+            if (body.length > 65000 || !body.includes('### Resolved HTTP stack')) {
+              throw new Error('diagnostic body boundary check failed');
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });
+
   dashboard-smoke:
     # Dashboard data layer unit tests + headless Streamlit AppTest render
     # over a fixture warehouse — proves the UI code path executes without
     # exceptions on a clean checkout.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -263,10 +344,19 @@ jobs:
     # Materializes the full asset graph (bronze -> marts + checks) in-process
     # on a clean checkout, in deterministic fixture mode (no EVDS secret).
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -281,10 +371,19 @@ jobs:
     # MinIO is throwaway (lives only for this job), so hardcoded creds here
     # are ephemeral test fixtures, not secrets.
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -307,8 +406,17 @@ jobs:
 
   docker-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       # The docker.io pull behind `FROM python:3.12-slim` failed twice on
       # 2026-09-05 (runs 33961541818 and 33962425508) and then succeeded
@@ -371,13 +479,14 @@ jobs:
     # Opens a GitHub issue when a scheduled run fails, so silent breakage
     # (e.g. an upstream EVDS API change) surfaces without anyone watching CI.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [ingest-and-transform, docker-smoke, remote-storage, dagster-orchestration, dashboard-smoke]
     if: failure() && github.event_name == 'schedule'
     permissions:
       contents: read
       issues: write
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
