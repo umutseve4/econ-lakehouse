@@ -86,11 +86,16 @@ jobs:
           test "$(grep -c 'MISSING — no run recorded' site/index.html)" = "14"
           echo "empty ledger renders 14 explicit MISSING days and exits non-zero: OK"
 
+      # Pinned to fixture rather than left on `auto`. This step asserts that
+      # the rendered page says SYNTHETIC FIXTURE; on `auto` that assertion
+      # would be testing the absence of a secret rather than the behaviour
+      # of the renderer, and would start failing confusingly the day this
+      # job is given a key.
       - name: Render from a real pipeline run
         run: |
           set -euo pipefail
           rm -rf site
-          python orchestrate.py
+          python orchestrate.py --mode fixture
           python -m evidence.render \
             --ledger warehouse/run_log.parquet \
             --out site \
@@ -176,13 +181,21 @@ jobs:
           fi
           echo "restored $(find warehouse/run_log_parts -name '*.parquet' | wc -l) part file(s)"
 
-      # No EVDS_API_KEY is provided, so the orchestrator runs in fixture
-      # mode. It records its own row either way, which is exactly why a
-      # failure here must not stop the publish: a failed run is evidence too.
-      - name: Run the pipeline (fixture mode, no credentials)
+      # Fixture mode is stated, not inferred. It used to rest on a negative
+      # — no step here maps EVDS_API_KEY, so the orchestrator fell through
+      # to fixture on its own — which meant the published claim "DATA MODE:
+      # SYNTHETIC FIXTURE" was guaranteed only by nobody ever adding an
+      # `env:` line. `--mode fixture` makes the guarantee the program's
+      # rather than the reviewer's, and the ledger's `mode` column records
+      # what actually ran.
+      #
+      # This run records its own row whether it passes or fails, which is
+      # exactly why a failure here must not stop the publish: a failed run
+      # is evidence too.
+      - name: Run the pipeline (fixture mode, pinned)
         id: pipeline
         continue-on-error: true
-        run: python orchestrate.py
+        run: python orchestrate.py --mode fixture
 
       - name: Append this run to the ledger branch
         if: always()
