@@ -1,20 +1,50 @@
-# econ-lakehouse
+<h1 align="center">econ-lakehouse</h1>
 
-[![pipeline](https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml/badge.svg)](https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml)
-[![freshness-gate](https://github.com/umutseve4/econ-lakehouse/actions/workflows/freshness-gate.yml/badge.svg)](https://github.com/umutseve4/econ-lakehouse/actions/workflows/freshness-gate.yml)
-[![run-audit](https://github.com/umutseve4/econ-lakehouse/actions/workflows/run-audit.yml/badge.svg)](https://github.com/umutseve4/econ-lakehouse/actions/workflows/run-audit.yml)
+<p align="center">
+  A tested medallion warehouse for Turkish macroeconomic data —<br>
+  and, more unusually, one that <b>tells you when its own numbers are stale</b><br>
+  instead of quietly swapping in a series that looks fresher.
+</p>
 
-**Deployment URL:** [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/)
+<p align="center">
+  <a href="https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml"><img src="https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml/badge.svg" alt="pipeline"></a>
+  <a href="https://github.com/umutseve4/econ-lakehouse/actions/workflows/freshness-gate.yml"><img src="https://github.com/umutseve4/econ-lakehouse/actions/workflows/freshness-gate.yml/badge.svg" alt="freshness-gate"></a>
+  <a href="https://github.com/umutseve4/econ-lakehouse/actions/workflows/run-audit.yml"><img src="https://github.com/umutseve4/econ-lakehouse/actions/workflows/run-audit.yml/badge.svg" alt="run-audit"></a>
+</p>
 
-A tested medallion-architecture warehouse for Turkish macroeconomic data. It turns API/CSV input into validated bronze Parquet, typed dbt silver models, analytical gold marts, a read-only API, and a Streamlit dashboard.
+<p align="center">
+  <img src="https://img.shields.io/badge/freshness%20checks-73-FF4D4F?style=flat-square" alt="73 freshness checks">
+  <img src="https://img.shields.io/badge/concurrent%20writers%20proven-12-FF4D4F?style=flat-square" alt="12 concurrent writers">
+  <img src="https://img.shields.io/badge/candidate%20series%20rejected-14-FF4D4F?style=flat-square" alt="14 candidate series rejected">
+</p>
 
-> **Freshness notice (verified 2026-08-22):** the official production source `TP.FG.J0` currently ends at **2026-01**. The warehouse is live-source, but its newest CPI observation is not current. The dashboard is designed to display the exact observation date and lag instead of presenting the value as current. See [Data freshness policy](docs/data-freshness.md).
+---
 
-> **Deployment evidence boundary (re-verified 2026-09-04T22:25Z):** the Streamlit Community Cloud application is currently **dormant**. The URL returns "This app has gone to sleep due to inactivity" instead of the dashboard, so the deployed commit SHA cannot be verified while it sleeps. The link is retained for portfolio access and wakes on click, but no always-on availability is claimed and deployment is tracked separately from code and CI evidence.
+## Run the whole thing in four commands
 
-## Why this exists
+```bash
+pip install -r requirements.txt
+python tests/test_ingest.py
+python tests/test_freshness.py
+python orchestrate.py
+```
 
-Analytical SQL written directly against raw files is untyped, unvalidated, and difficult to reproduce. This project makes the full path explicit and testable:
+The single entrypoint performs fetch → bronze ingest → idempotency proof → dbt
+build → gold sanity check and exits non-zero on failure. It turns API/CSV input
+into validated bronze Parquet, typed dbt silver models, analytical gold marts, a
+read-only API, and a Streamlit dashboard.
+
+Use official EVDS input only through an environment variable; never place the key
+in a URL, source file, log, or commit:
+
+```bash
+EVDS_API_KEY=... python orchestrate.py
+```
+
+## The path, made explicit
+
+Analytical SQL written directly against raw files is untyped, unvalidated, and
+difficult to reproduce. This project makes the full path explicit and testable:
 
 ```text
 TCMB EVDS / synthetic CI fixture
@@ -43,67 +73,39 @@ Each orchestrated run
 | Serving | FastAPI, Streamlit | read-only DB, parameterized SQL, response limits, provenance and freshness disclosure |
 | Operations | GitHub Actions, Docker, Dagster, Parquet audit log | clean rebuilds, remote-storage smoke, scheduled alerting, live freshness gate, one atomically written run record per orchestration attempt, proven against 12 concurrent writers |
 
-## Quickstart
+## Current status notices
 
-```bash
-pip install -r requirements.txt
-python tests/test_ingest.py
-python tests/test_freshness.py
-python orchestrate.py
-```
+> **Freshness notice (verified 2026-08-22):** the official production source
+> `TP.FG.J0` currently ends at **2026-01**. The warehouse is live-source, but its
+> newest CPI observation is not current. The dashboard is designed to display the
+> exact observation date and lag instead of presenting the value as current. See
+> [Data freshness policy](docs/data-freshness.md).
 
-Use official EVDS input only through an environment variable; never place the key in a URL, source file, log, or commit:
+> **Deployment evidence boundary (re-verified 2026-09-04T22:25Z):** the Streamlit
+> Community Cloud application at
+> [econ-lakehouse-umut.streamlit.app](https://econ-lakehouse-umut.streamlit.app/)
+> is currently **dormant**. The URL returns "This app has gone to sleep due to
+> inactivity" instead of the dashboard, so the deployed commit SHA cannot be
+> verified while it sleeps. The link is retained for portfolio access and wakes on
+> click, but no always-on availability is claimed and deployment is tracked
+> separately from code and CI evidence.
 
-```bash
-EVDS_API_KEY=... python orchestrate.py
-```
+## Data freshness: an explicit limitation, not a silent series swap
 
-### Docker
+The production mapping remains `TP.FG.J0 → CP00`. Live diagnostics proved that
+extending `endDate`, removing aggregation/formula parameters, and requesting the
+bare series all return the same non-null tail ending at **2026-01**. The freeze is
+upstream, not a parser or dbt defect.
 
-```bash
-docker build -t econ-lakehouse .
-docker run --rm econ-lakehouse
+A sweep tested **14 candidate series**. No series was both current and
+historically compatible. `TP.TUFE1YI.T1` reaches **2026-07**, but across
+**121 overlapping YoY months** its mean absolute difference from `TP.FG.J0` is
+**15.1540 percentage points** and its maximum difference is
+**72.1737 percentage points at 2022-10**. A simple index rebasing cannot cause
+that: the constant base factor cancels in the YoY ratio.
 
-docker run --rm -e EVDS_API_KEY=... econ-lakehouse
-```
-
-The single entrypoint performs fetch → bronze ingest → idempotency proof → dbt build → gold sanity check and exits non-zero on failure.
-
-### API
-
-```bash
-uvicorn serve.app:app --port 8000
-curl http://localhost:8000/health
-curl 'http://localhost:8000/v1/inflation?year=2024&limit=5'
-curl http://localhost:8000/v1/inflation/latest
-```
-
-The API opens DuckDB with `read_only=True`, uses parameterized filters, and caps `limit` at **1000**. OpenAPI documentation is available at `/docs`. Set `LAKE_DB=/path/to.duckdb` to use another warehouse.
-
-### Dashboard
-
-```bash
-streamlit run dashboard/app.py
-```
-
-The Streamlit app shows latest available YoY observations, an interactive time series, raw data, and CSV export. Data access is isolated in `dashboard/data.py`; freshness policy is pure/testable in `quality/freshness.py`. On cold start, `dashboard/bootstrap.py` invokes the same `orchestrate.py` pipeline used by CI and Docker. `warehouse/provenance.json` records fixture/live mode, source, UTC build time, and gold row count.
-
-### Dagster
-
-```bash
-pip install dagster dagster-webserver
-dagster dev -f orchestration/definitions.py
-```
-
-The asset graph is `bronze_cpi → warehouse_marts` plus a `gold_nonempty` asset check. CI materializes it in-process; Dagster adds lineage, retries, scheduling, and observability without creating a second pipeline implementation.
-
-## Data freshness: explicit limitation, not a silent series swap
-
-The production mapping remains `TP.FG.J0 → CP00`. Live diagnostics proved that extending `endDate`, removing aggregation/formula parameters, and requesting the bare series all return the same non-null tail ending at **2026-01**. The freeze is upstream, not a parser or dbt defect.
-
-A sweep tested **14 candidate series**. No series was both current and historically compatible. `TP.TUFE1YI.T1` reaches **2026-07**, but across **121 overlapping YoY months** its mean absolute difference from `TP.FG.J0` is **15.1540 percentage points** and its maximum difference is **72.1737 percentage points at 2022-10**. A simple index rebasing cannot cause that: the constant base factor cancels in the YoY ratio.
-
-Therefore this repository does **not** splice a different methodology onto the old history. The implemented policy is:
+Therefore this repository does **not** splice a different methodology onto the
+old history. The implemented policy is:
 
 - **0–3 calendar months:** fresh/pass.
 - **4+ calendar months:** stale/fail.
@@ -112,37 +114,155 @@ Therefore this repository does **not** splice a different methodology onto the o
 - Weekly/manual live run: fetch `TP.FG.J0`, fail beyond **3 months**, and open one deduplicated `data-freshness` issue, or comment on it if it is already open.
 - Future migration: require authoritative series metadata and full-history compatibility evidence, then rebuild the whole history and document the methodology break.
 
-Because the freeze is known, investigated and permanent, the weekly gate would otherwise be red forever — and a check that can only ever be red carries no information. CI therefore recognises one **time-boxed acknowledgement** (`ingest/freshness_waiver.py`, expiring **2026-10-05**, exclusive) that classifies this exact series at this exact frozen month as `acknowledged_stale` rather than a new failure. It is **CI-only**: `quality/freshness.py` is unchanged, so the dashboard still reports the freeze as an error to human readers. Any change in series, month or date makes the gate red again with no human action. Details and renewal rules: [docs/data-freshness.md](docs/data-freshness.md).
+Because the freeze is known, investigated and permanent, the weekly gate would
+otherwise be red forever — and a check that can only ever be red carries no
+information. CI therefore recognises one **time-boxed acknowledgement**
+(`ingest/freshness_waiver.py`, expiring **2026-10-05**, exclusive) that classifies
+this exact series at this exact frozen month as `acknowledged_stale` rather than a
+new failure. It is **CI-only**: `quality/freshness.py` is unchanged, so the
+dashboard still reports the freeze as an error to human readers. Any change in
+series, month or date makes the gate red again with no human action. Details and
+renewal rules: [docs/data-freshness.md](docs/data-freshness.md).
 
-Operational evidence and commands are documented in [docs/data-freshness.md](docs/data-freshness.md).
+## Surfaces
+
+<details>
+<summary><b>Docker</b></summary>
+
+```bash
+docker build -t econ-lakehouse .
+docker run --rm econ-lakehouse
+
+docker run --rm -e EVDS_API_KEY=... econ-lakehouse
+```
+
+</details>
+
+<details>
+<summary><b>API</b></summary>
+
+```bash
+uvicorn serve.app:app --port 8000
+curl http://localhost:8000/health
+curl 'http://localhost:8000/v1/inflation?year=2024&limit=5'
+curl http://localhost:8000/v1/inflation/latest
+```
+
+The API opens DuckDB with `read_only=True`, uses parameterized filters, and caps
+`limit` at **1000**. OpenAPI documentation is available at `/docs`. Set
+`LAKE_DB=/path/to.duckdb` to use another warehouse.
+
+</details>
+
+<details>
+<summary><b>Dashboard</b></summary>
+
+```bash
+streamlit run dashboard/app.py
+```
+
+The Streamlit app shows latest available YoY observations, an interactive time
+series, raw data, and CSV export. Data access is isolated in `dashboard/data.py`;
+freshness policy is pure/testable in `quality/freshness.py`. On cold start,
+`dashboard/bootstrap.py` invokes the same `orchestrate.py` pipeline used by CI and
+Docker. `warehouse/provenance.json` records fixture/live mode, source, UTC build
+time, and gold row count.
+
+</details>
+
+<details>
+<summary><b>Dagster</b></summary>
+
+```bash
+pip install dagster dagster-webserver
+dagster dev -f orchestration/definitions.py
+```
+
+The asset graph is `bronze_cpi → warehouse_marts` plus a `gold_nonempty` asset
+check. CI materializes it in-process; Dagster adds lineage, retries, scheduling,
+and observability without creating a second pipeline implementation.
+
+</details>
 
 ## Data and storage
 
-`data/sample/cpi_fixture.csv` is synthetic and exists only for deterministic testing. It is **not** official statistics. Live mode uses TCMB EVDS. Bronze data can also target S3-compatible storage through an fsspec URI; CI verifies the path against a real MinIO service. dbt snapshots retain SCD Type 2 revision history when upstream values change.
+`data/sample/cpi_fixture.csv` is synthetic and exists only for deterministic
+testing. It is **not** official statistics. Live mode uses TCMB EVDS. Bronze data
+can also target S3-compatible storage through an fsspec URI; CI verifies the path
+against a real MinIO service. dbt snapshots retain SCD Type 2 revision history
+when upstream values change.
 
 ## CI and alerting
 
-The main workflow rebuilds and verifies ingestion, dbt models/tests, idempotency, API, dashboard, Dagster, Docker, and S3-compatible storage. It runs weekly at `17 6 * * 1`. A scheduled failure opens one `pipeline-failure` issue and records every later failure as a comment on that same issue, deduplicating on a stable HTML marker rather than on the issue title. Until 2026-09-04 this sentence was inaccurate: the job put the run date *in* the title and performed no lookup at all, so a recurring failure would have opened a new issue every Monday. Neither branch of the corrected logic has yet been observed firing in production — see issue #47.
+The main workflow rebuilds and verifies ingestion, dbt models/tests, idempotency,
+API, dashboard, Dagster, Docker, and S3-compatible storage. It runs weekly at
+`17 6 * * 1`. A scheduled failure opens one `pipeline-failure` issue and records
+every later failure as a comment on that same issue, deduplicating on a stable
+HTML marker rather than on the issue title. Until 2026-09-04 this sentence was
+inaccurate: the job put the run date *in* the title and performed no lookup at
+all, so a recurring failure would have opened a new issue every Monday. Neither
+branch of the corrected logic has yet been observed firing in production — see
+issue #47.
 
-The independent freshness workflow runs deterministic policy tests on code changes and the live gate weekly at `47 6 * * 1` or on manual dispatch. Keeping the live upstream check separate prevents a known external freeze from making unrelated pull requests unmergeable while still producing an operational failure signal.
+The independent freshness workflow runs deterministic policy tests on code changes
+and the live gate weekly at `47 6 * * 1` or on manual dispatch. Keeping the live
+upstream check separate prevents a known external freeze from making unrelated
+pull requests unmergeable while still producing an operational failure signal.
 
-The independent run-audit workflow runs the contract, failure-path, and concurrency test modules, executes the fixture pipeline twice, then reads the result back with DuckDB from both the derived snapshot and the `run_log_parts/*.parquet` glob — asserting that no `run_id` appears twice, that the schema contract holds, and that the snapshot row count equals the parts row count. Both the snapshot and the parts directory are uploaded as the audit artifact.
+The independent run-audit workflow runs the contract, failure-path, and
+concurrency test modules, executes the fixture pipeline twice, then reads the
+result back with DuckDB from both the derived snapshot and the
+`run_log_parts/*.parquet` glob — asserting that no `run_id` appears twice, that
+the schema contract holds, and that the snapshot row count equals the parts row
+count. Both the snapshot and the parts directory are uploaded as the audit
+artifact.
 
-The evidence workflow runs daily at `23 5 * * *` and on manual dispatch. It restores the run ledger from the `evidence` branch, executes the fixture pipeline, appends this run's part file back to that branch, renders a static status page from the ledger, and publishes it. A failed pipeline run is still recorded and still published — the page shows `FAILING` — and the workflow reports failure only afterwards, so a broken pipeline can never produce a green run *and* a silent page. On pull requests the workflow only tests the renderer: it never writes to the ledger branch and never deploys.
+The evidence workflow runs daily at `23 5 * * *` and on manual dispatch. It
+restores the run ledger from the `evidence` branch, executes the fixture pipeline,
+appends this run's part file back to that branch, renders a static status page
+from the ledger, and publishes it. A failed pipeline run is still recorded and
+still published — the page shows `FAILING` — and the workflow reports failure only
+afterwards, so a broken pipeline can never produce a green run *and* a silent
+page. On pull requests the workflow only tests the renderer: it never writes to
+the ledger branch and never deploys.
 
 ## Run observability
 
-Every `orchestrate.py` attempt writes one append-only record without changing the pipeline's original exit semantics. The record includes run identity and timing, success/failure state, mode and source, bronze/gold row counts, step totals, failed step, and Git SHA. Query examples, the schema contract, and CI evidence are documented in [docs/observability.md](docs/observability.md).
+Every `orchestrate.py` attempt writes one append-only record without changing the
+pipeline's original exit semantics. The record includes run identity and timing,
+success/failure state, mode and source, bronze/gold row counts, step totals,
+failed step, and Git SHA. Query examples, the schema contract, and CI evidence are
+documented in [docs/observability.md](docs/observability.md).
 
-Each run writes its **own** part file under `warehouse/run_log_parts/` through a temporary file and an atomic `os.replace`, so no run reads or rewrites another run's data. `warehouse/run_log.parquet` is a derived snapshot rebuilt from those parts, kept so the documented DuckDB one-liner and the CI artifact contract are unchanged; it can be regenerated at any time with `compact()`.
+Each run writes its **own** part file under `warehouse/run_log_parts/` through a
+temporary file and an atomic `os.replace`, so no run reads or rewrites another
+run's data. `warehouse/run_log.parquet` is a derived snapshot rebuilt from those
+parts, kept so the documented DuckDB one-liner and the CI artifact contract are
+unchanged; it can be regenerated at any time with `compact()`.
 
-This replaces the earlier read-modify-write append, which lost a run whenever two executions overlapped between the read and the write. That loss is now reproduced deterministically against the old algorithm in `tests/test_run_log_concurrency.py`, and the same interleaving — plus 12 genuinely concurrent OS processes — is proved to lose nothing under the current layout. Since M14 the ledger is no longer purely per-environment: the scheduled evidence workflow persists each run's part file to a dedicated orphan `evidence` branch and refuses any commit that modifies or deletes an existing part, so the recorded history is append-only in git as well as on disk. Remaining honest limitation: this is durability inside one GitHub repository, not the S3/MinIO lake, and a local or Codespace run still keeps its ledger only in the git-ignored `warehouse/` directory. Production-ready is therefore still not claimed.
+This replaces the earlier read-modify-write append, which lost a run whenever two
+executions overlapped between the read and the write. That loss is now reproduced
+deterministically against the old algorithm in
+`tests/test_run_log_concurrency.py`, and the same interleaving — plus 12 genuinely
+concurrent OS processes — is proved to lose nothing under the current layout.
+Since M14 the ledger is no longer purely per-environment: the scheduled evidence
+workflow persists each run's part file to a dedicated orphan `evidence` branch and
+refuses any commit that modifies or deletes an existing part, so the recorded
+history is append-only in git as well as on disk. Remaining honest limitation:
+this is durability inside one GitHub repository, not the S3/MinIO lake, and a
+local or Codespace run still keeps its ledger only in the git-ignored `warehouse/`
+directory. Production-ready is therefore still not claimed.
 
 ## Published evidence page
 
-The dashboard is deployed on Streamlit Community Cloud, which suspends an app after inactivity. A reviewer opening that link is shown a wake-up screen rather than evidence, so availability there cannot be claimed.
+The dashboard is deployed on Streamlit Community Cloud, which suspends an app
+after inactivity. A reviewer opening that link is shown a wake-up screen rather
+than evidence, so availability there cannot be claimed.
 
-M14 adds a second, deliberately dumber surface: a static page generated from the run ledger by `evidence/render.py` and served from GitHub Pages. It has nothing to wake up. Because a static page can just as easily keep serving a cheerful result after the schedule feeding it has stopped, the page is built to fail closed:
+M14 adds a second, deliberately dumber surface: a static page generated from the
+run ledger by `evidence/render.py` and served from GitHub Pages. It has nothing to
+wake up. Because a static page can just as easily keep serving a cheerful result
+after the schedule feeding it has stopped, the page is built to fail closed:
 
 - It carries its own `generated at`, `latest run` and staleness threshold as data attributes, and re-evaluates its age in the reader's browser on load — so it turns itself `STALE` without any server. With JavaScript disabled it says freshness was not verified instead of implying it was.
 - Age overrides success. A run window that is entirely green but older than 30 hours renders `STALE`, not `HEALTHY`.
@@ -150,9 +270,15 @@ M14 adds a second, deliberately dumber surface: a static page generated from the
 - Rows that fail to parse are counted and displayed, never silently dropped, and the success-rate denominator is the number of *recorded runs* — stated on the page — not the number of days expected.
 - The page labels its own data mode (`SYNTHETIC FIXTURE`) and lists what it does and does not prove. The words `real-time`, `production-ready`, `uptime`, `always-on` and `24/7` are rejected by the test suite.
 
-`tests/test_evidence_render.py` covers the UTC day boundaries, the window edges, the strict staleness cut-off, malformed and missing columns, naive and offset timestamps, HTML escaping, JSON/HTML agreement, and byte-level determinism of the rendered payload.
+`tests/test_evidence_render.py` covers the UTC day boundaries, the window edges,
+the strict staleness cut-off, malformed and missing columns, naive and offset
+timestamps, HTML escaping, JSON/HTML agreement, and byte-level determinism of the
+rendered payload.
 
 ## Evidence status
+
+<details>
+<summary><b>Full evidence ledger — including the failures</b></summary>
 
 - Ingest: **tested** — **12/12** unit tests plus end-to-end pipeline.
 - Serving API: **tested** — **13** fixture-based tests, including SQL injection and limit validation.
@@ -175,7 +301,10 @@ M14 adds a second, deliberately dumber surface: a static page generated from the
 - Scheduled-run evidence: **not yet accumulated** — the daily schedule becomes active only once this workflow is on the default branch; consecutive-day evidence is claimed only after it exists in the ledger.
 - Production-ready: **not claimed**.
 
-## Milestones
+</details>
+
+<details>
+<summary><b>Milestones M1–M14</b></summary>
 
 1. **M1 — vertical slice:** fixture → bronze → silver → gold, quality-gated.
 2. **M2 — real source:** EVDS 3 ingestion verified in CI.
@@ -192,6 +321,8 @@ M14 adds a second, deliberately dumber surface: a static page generated from the
 13. **M13 — concurrency-safe ledger:** per-run part files written through atomic renames, a derived snapshot that preserves the existing query and artifact contract, a deterministic replay of the lost update it removes, and a **12-process** parallel write proof in CI.
 14. **M14 — published evidence that cannot sleep:** a scheduled workflow that persists the run ledger to an append-only `evidence` branch and renders a static, self-checking status page — one that flips itself to `STALE` in the reader's browser, shows missing days instead of hiding them, refuses to render on an empty ledger, and publishes failed runs as loudly as successful ones.
 
-## License
+</details>
+
+---
 
 MIT — see [LICENSE](LICENSE).
