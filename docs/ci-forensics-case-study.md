@@ -21,7 +21,7 @@ that only reports its successes is not a diagnosis.
 
 | # | Symptom | Verdict | How it was decided | Outcome |
 |---|---|---|---|---|
-| 1 | `docker-smoke` failing at a different step on each run | **External, transient** | One commit, three dispatches, three different results | Mitigated with bounded retry (#62), never masked |
+| 1 | `docker-smoke` failing at a different step on each run | **External, transient** | One commit, three runs, three different results | Mitigated with bounded retry (#62), never masked |
 | 2 | `dashboard-smoke` step 7 failing in 5 s against a 7/8/8 s baseline | **Flake** | Same commit re-dispatched → passed in 8 s | Tracked as its own issue (#63), no code changed |
 | 3 | `run-audit` step 7 failing in exactly 4 s, pass or fail | **Real defect** | The duration did not change → the step ran to completion and reported a true negative | Root-caused, fixed, mutation-verified (#64) |
 | 4 | `run-audit` step 7 exiting **134** | **Unexplained** | Non-deterministic: 1 abort / 1 clean on the identical tree | Merged with a stated monitoring debt, not called "fixed" |
@@ -47,9 +47,9 @@ Then the decisive experiment — **one commit, three runs**, `pipeline` on
 
 | Run | Event | `docker-smoke` result |
 |---|---|---|
-| #141 (push) | push | step 5 failed, step 3 passed in 44 s |
-| #142 (dispatch) | `workflow_dispatch` | step 3 `Build image` failed in **5 s** |
-| #143 (dispatch) | `workflow_dispatch` | **all six jobs SUCCESS**, step 3 49 s, step 5 10 s |
+| push run | push | step 5 failed, step 3 passed in 44 s |
+| #142 | `workflow_dispatch` | step 3 `Build image` failed in **5 s** |
+| #143 | `workflow_dispatch` | **all six jobs SUCCESS**, step 3 49 s, step 5 10 s |
 
 The 5-second death is the tell. On host runners the same dependency stack
 installs in 37–43 s, and in that same run the quay.io MinIO pull succeeded in
