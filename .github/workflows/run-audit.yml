@@ -14,6 +14,7 @@ on:
       - "tests/test_run_log*.py"
       - "tests/test_orchestrate_cli.py"
       - ".github/workflows/run-audit.yml"
+      - ".github/scripts/step-with-forensics.sh"
   workflow_dispatch:
 
 permissions:
@@ -81,8 +82,26 @@ jobs:
       - name: Unit tests — the --mode flag actually decides the mode
         run: python tests/test_orchestrate_cli.py
 
+      # The three orchestrator runs below are the steps that have actually
+      # failed intermittently (#60 step 9, #68 step 10, #70 step 9), and every
+      # one of those investigations stalled at the same wall: the only thing
+      # obtainable without a signed-in browser was `Process completed with
+      # exit code 1`, so the traceback was never seen and no fix could be
+      # designed honestly.
+      #
+      # `step-with-forensics.sh` closes that specific gap. It runs the command
+      # unchanged, passes the exit code through unchanged, and *additionally*
+      # republishes the tail of the output as a GitHub error annotation --
+      # which, unlike the raw log, is readable from the API. It also dumps the
+      # workspace state that distinguishes #70's branch A (the pipeline itself
+      # failed and said so) from branch B (the step died producing nothing,
+      # i.e. an external interruption).
+      #
+      # It cannot turn a red step green: the wrapper's last statement is
+      # `exit $code`, and the diagnostic block runs only after the code has
+      # been captured.
       - name: Pipeline run (fixture mode)
-        run: python orchestrate.py --mode fixture
+        run: bash .github/scripts/step-with-forensics.sh pipeline-run-1 python orchestrate.py --mode fixture
 
       # Absence of evidence, one more time. When this job failed on main, the
       # orchestrator had *already* written `failed_step` to the ledger before
@@ -127,7 +146,7 @@ jobs:
           cat artifacts/datastack.txt || echo "(inventory not captured)"
 
       - name: Second pipeline run — history must accumulate
-        run: python orchestrate.py --mode fixture
+        run: bash .github/scripts/step-with-forensics.sh pipeline-run-2 python orchestrate.py --mode fixture
 
       # Issue #49's acceptance case, proved against the real ledger rather
       # than a mock: a credential in the environment must not be able to
@@ -135,7 +154,7 @@ jobs:
       - name: Third run — a present credential must not override --mode fixture
         env:
           EVDS_API_KEY: dummy-value-that-must-never-be-used
-        run: python orchestrate.py --mode fixture
+        run: bash .github/scripts/step-with-forensics.sh pipeline-run-3 python orchestrate.py --mode fixture
 
       - name: Reject an unknown flag instead of ignoring it
         run: |
@@ -237,5 +256,6 @@ jobs:
             warehouse/run_log.parquet
             warehouse/run_log_parts/
             artifacts/datastack.txt
+            artifacts/pipeline-run-*.log
           if-no-files-found: error
           retention-days: 30
