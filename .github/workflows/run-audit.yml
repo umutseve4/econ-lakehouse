@@ -38,11 +38,36 @@ jobs:
         with:
           python-version: "3.12"
 
+      # This step used to end with a bare `pip install duckdb`. That install
+      # was redundant -- requirements.txt already carries `duckdb>=1.5.5` --
+      # and, being unconstrained, it was a second dependency resolution that
+      # no other job in this repository performs: it can legally resolve a
+      # duckdb newer than the one dbt-duckdb was resolved against, and the
+      # combination is then exercised for the first time by `dbt build`.
+      # The differential that motivated removing it: `docker-smoke` runs the
+      # identical `python orchestrate.py --mode fixture` from requirements.txt
+      # alone (see Dockerfile) and passes, while this job's equivalent step
+      # fails. Removing the extra install makes the two environments the same
+      # question. It is a candidate cause, not a proven one -- which is why
+      # the two diagnostic steps below exist to answer it either way.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install duckdb
+
+      # requirements.txt pins floors, not exact versions, so "which duckdb
+      # actually got installed?" is unanswerable after the fact unless the
+      # answer was recorded while the job ran. Never gates CI.
+      - name: Resolved data stack inventory (diagnostic, never gates CI)
+        continue-on-error: true
+        run: |
+          mkdir -p artifacts
+          python -m pip list 2>&1 \
+            | grep -Ei '^(duckdb|dbt-core|dbt-duckdb|pandas|pyarrow|fsspec) ' \
+            | tee artifacts/datastack.txt
+          python -c "import duckdb; print('duckdb runtime:', duckdb.__version__)" \
+            | tee -a artifacts/datastack.txt
+          dbt --version 2>&1 | tee -a artifacts/datastack.txt || true
 
       - name: Unit tests — run log contract
         run: python tests/test_run_log.py
@@ -58,6 +83,48 @@ jobs:
 
       - name: Pipeline run (fixture mode)
         run: python orchestrate.py --mode fixture
+
+      # Absence of evidence, one more time. When this job failed on main, the
+      # orchestrator had *already* written `failed_step` to the ledger before
+      # re-raising (orchestrate.py `_record_run` in the `except` branch), and
+      # `Upload run audit evidence` uploaded that ledger with `if: always()`.
+      # The answer was on disk the whole time. But `Print run history` only
+      # ran on success, so on the one occasion the information was needed,
+      # every step that could have shown it was skipped. Read the ledger on
+      # failure, so a red badge states its own cause instead of requiring
+      # somebody to open the raw log.
+      - name: Explain the failure from the ledger
+        if: failure()
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import sys
+
+          sys.path.insert(0, ".")
+          print("===== BASARISIZLIK ACIKLAMASI =====")
+          try:
+              from observability.run_log import read_runs
+          except BaseException as exc:  # noqa: BLE001 - diagnostics must not raise
+              print(f"ledger unreadable: {exc!r}")
+              raise SystemExit(0)
+
+          try:
+              df = read_runs("warehouse/run_log.parquet")
+          except BaseException as exc:  # noqa: BLE001
+              print(f"ledger unreadable: {exc!r}")
+              raise SystemExit(0)
+
+          if df.empty:
+              print("ledger empty -- the run failed before it could record itself")
+              raise SystemExit(0)
+
+          row = df.iloc[-1]
+          for col in df.columns:
+              print(f"{col}: {row[col]}")
+          print(f"recorded_runs: {len(df)}")
+          PY
+          echo "--- resolved data stack ---"
+          cat artifacts/datastack.txt || echo "(inventory not captured)"
 
       - name: Second pipeline run — history must accumulate
         run: python orchestrate.py --mode fixture
@@ -169,5 +236,6 @@ jobs:
           path: |
             warehouse/run_log.parquet
             warehouse/run_log_parts/
+            artifacts/datastack.txt
           if-no-files-found: error
           retention-days: 30
