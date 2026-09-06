@@ -7,6 +7,11 @@
 </p>
 
 <p align="center">
+  <a href="https://umutseve4.github.io/econ-lakehouse/"><b>▶ Open the live evidence page</b></a>
+  &nbsp;·&nbsp; static, self-checking, nothing to wake up
+</p>
+
+<p align="center">
   <a href="https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml"><img src="https://github.com/umutseve4/econ-lakehouse/actions/workflows/pipeline.yml/badge.svg" alt="pipeline"></a>
   <a href="https://github.com/umutseve4/econ-lakehouse/actions/workflows/freshness-gate.yml"><img src="https://github.com/umutseve4/econ-lakehouse/actions/workflows/freshness-gate.yml/badge.svg" alt="freshness-gate"></a>
   <a href="https://github.com/umutseve4/econ-lakehouse/actions/workflows/run-audit.yml"><img src="https://github.com/umutseve4/econ-lakehouse/actions/workflows/run-audit.yml/badge.svg" alt="run-audit"></a>
@@ -89,6 +94,14 @@ Each orchestrated run
 > verified while it sleeps. The link is retained for portfolio access and wakes on
 > click, but no always-on availability is claimed and deployment is tracked
 > separately from code and CI evidence.
+
+> **Evidence page (verified live 2026-09-06):** the static page at
+> [umutseve4.github.io/econ-lakehouse](https://umutseve4.github.io/econ-lakehouse/)
+> is published and serving. Its most recent render was generated at
+> **2026-09-05T00:40:31Z** from **2 recorded runs**, and it displays the other
+> **12 days of the 14-day window as explicit `MISSING` rows**. Until 2026-09-06
+> this README said the page was "implemented, not yet published" because Pages was
+> disabled; that sentence was stale and is corrected below.
 
 ## Data freshness: an explicit limitation, not a silent series swap
 
@@ -255,6 +268,8 @@ directory. Production-ready is therefore still not claimed.
 
 ## Published evidence page
 
+**Live at [umutseve4.github.io/econ-lakehouse](https://umutseve4.github.io/econ-lakehouse/).**
+
 The dashboard is deployed on Streamlit Community Cloud, which suspends an app
 after inactivity. A reviewer opening that link is shown a wake-up screen rather
 than evidence, so availability there cannot be claimed.
@@ -274,6 +289,15 @@ after the schedule feeding it has stopped, the page is built to fail closed:
 the strict staleness cut-off, malformed and missing columns, naive and offset
 timestamps, HTML escaping, JSON/HTML agreement, and byte-level determinism of the
 rendered payload.
+
+The published render carries its own provenance in the page footer: renderer
+version **1.0.0**, source commit `99c14827726016bb13a4c27adddf6cd92e5e957f`,
+ledger location `branch: evidence, path: run_log_parts/`, **2** ledger rows read,
+and a content SHA-256 of the rendered payload. Because the fail-closed rule is
+real rather than decorative, the page will present itself as `STALE` to any reader
+who opens it more than **30 hours** after that render, regardless of the fact that
+both recorded runs succeeded. That is the intended behaviour, and it is the reason
+the page is worth publishing at all.
 
 ## Evidence status
 
@@ -295,10 +319,10 @@ rendered payload.
 - Pipeline failure alerting: **corrected, operationally unverified** — this README claimed the scheduled `pipeline` workflow opened a *deduplicated* `pipeline-failure` issue, but no deduplication existed: the alert job put the run date in the issue title and never queried existing issues, so a recurring failure would have produced one new issue per week. This is the mirror image of the freshness defect above — one alert deduplicated so aggressively that recurrences were silent, the other not at all. Both now key on a stable HTML marker and record recurrences as comments. Neither the create path nor the comment path has been observed in production; tracked in issue #47.
 - Workflow token scope: **tested in CI** — `pipeline.yml` had no top-level `permissions:` block, so `dashboard-smoke`, `docker-smoke`, `remote-storage` and `dagster-orchestration` inherited the repository default token scope. It now declares `permissions: contents: read` at the top level, with `pull-requests: write` and `issues: write` kept only on the two jobs that need them. Because same-repo `pull_request` events run the workflow file from the PR head, the reduced scope was actually executed by CI on the pull request before merge, not merely reviewed.
 - Waiver authorization: **not enforced** — any pull request can add an entry to `ingest/freshness_waiver.py` and thereby silence the freshness gate for a chosen series. The tests constrain what a waiver may *say*, not who may add one. Closing this needs branch protection plus a CODEOWNERS rule on that file, which is repository-settings work and is not done.
-- Deployment: **verified dormant 2026-09-04T22:25Z** — `econ-lakehouse-umut.streamlit.app` serves the Streamlit Community Cloud inactivity sleep page, so the dashboard is not reachable without a manual wake and the deployed SHA is unverifiable. Always-on availability is **not claimed**; the evidence page that cannot sleep is implemented in M14 and its publication status is tracked separately below.
+- Deployment: **verified dormant 2026-09-04T22:25Z** — `econ-lakehouse-umut.streamlit.app` serves the Streamlit Community Cloud inactivity sleep page, so the dashboard is not reachable without a manual wake and the deployed SHA is unverifiable. Always-on availability is **not claimed**; the evidence page that cannot sleep is published and tracked separately below.
 - Evidence page renderer: **tested** — **34** tests covering window arithmetic, the fail-closed state hierarchy, malformed input, escaping, and deterministic output.
-- Evidence page publication: **implemented, not yet published** — GitHub Pages is disabled for this repository, so the publish job detects that through the Pages API, skips deploying, and records the reason in the run summary rather than reporting a deployment that did not happen. A live URL is claimed only once the deploy step has run and the post-deploy smoke test has matched the served bytes against the source commit.
-- Scheduled-run evidence: **not yet accumulated** — the daily schedule becomes active only once this workflow is on the default branch; consecutive-day evidence is claimed only after it exists in the ledger.
+- Evidence page publication: **published and verified 2026-09-06** — GitHub Pages is enabled and <https://umutseve4.github.io/econ-lakehouse/> serves the rendered ledger. The served page was fetched and read end to end: renderer **1.0.0**, generated at **2026-09-05T00:40:31Z**, source commit `99c1482`, **2** ledger rows read, window **2026-08-23 → 2026-09-05**. This entry previously read "implemented, not yet published — GitHub Pages is disabled for this repository", which stopped being true once Pages was enabled and the deploy job ran; it is corrected here rather than quietly overwritten. Still **not** done: the post-deploy smoke test that matches the served bytes against the source commit is not automated, so byte-for-byte agreement between the published page and the producing commit remains a manual check.
+- Scheduled-run evidence: **2 runs recorded, consecutive-day evidence not yet accumulated** — the ledger holds successful runs on **2026-09-04** (23:51:11Z) and **2026-09-05** (00:40:24Z), a **2/14** day coverage, with the remaining **12** days rendered as explicit `MISSING` rows. Two runs 49 minutes apart across a UTC midnight is not a demonstrated daily schedule, and the page does not present it as one. A sustained multi-week record is claimed only once it exists in the ledger.
 - Production-ready: **not claimed**.
 
 </details>
