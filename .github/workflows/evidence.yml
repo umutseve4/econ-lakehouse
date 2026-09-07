@@ -383,7 +383,7 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
       # A deploy that reports success but serves the previous build is the
       # exact failure this milestone exists to rule out, so the published
