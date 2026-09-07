@@ -68,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - uses: actions/setup-python@v7
         with:
@@ -140,7 +140,7 @@ jobs:
       state: ${{ steps.render.outputs.state }}
     steps:
       - name: Check out the pipeline source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - uses: actions/setup-python@v7
         with:
@@ -156,14 +156,14 @@ jobs:
       - name: Check out the persisted ledger branch
         id: ledger_checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           ref: evidence
           path: .evidence
 
       - name: Create the ledger branch (first run only)
         if: steps.ledger_checkout.outcome != 'success'
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: .evidence
 
