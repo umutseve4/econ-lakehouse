@@ -1,5 +1,5 @@
-pandas>=2.2
-pyarrow>=15
+pandas>=3.0.5
+pyarrow>=25.0.1
 duckdb>=1.5.5
 dbt-duckdb>=1.11.0
 fsspec>=2026.7.0
@@ -7,5 +7,5 @@ s3fs>=2026.7.0
 fastapi>=0.141.1
 uvicorn>=0.52.4
 httpx>=0.28.1
-dagster>=1.13.18
-streamlit>=1.62.0
+dagster>=1.13.21
+streamlit>=1.63.0
