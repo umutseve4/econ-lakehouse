@@ -8,4 +8,4 @@ fastapi>=0.141.1
 uvicorn>=0.52.4
 httpx>=0.28.1
 dagster>=1.13.18
-streamlit>=1.62.0
+streamlit>=1.63.0
