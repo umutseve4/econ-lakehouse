@@ -68,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - uses: actions/setup-python@v7
         with:
@@ -120,7 +120,7 @@ jobs:
 
       - name: Upload the rendered preview
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: evidence-site-preview
           path: site
@@ -140,7 +140,7 @@ jobs:
       state: ${{ steps.render.outputs.state }}
     steps:
       - name: Check out the pipeline source
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - uses: actions/setup-python@v7
         with:
@@ -156,14 +156,14 @@ jobs:
       - name: Check out the persisted ledger branch
         id: ledger_checkout
         continue-on-error: true
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           ref: evidence
           path: .evidence
 
       - name: Create the ledger branch (first run only)
         if: steps.ledger_checkout.outcome != 'success'
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           path: .evidence
 
@@ -323,7 +323,7 @@ jobs:
 
       - name: Upload the ledger as a downloadable artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: evidence-ledger-${{ github.run_id }}
           path: |
