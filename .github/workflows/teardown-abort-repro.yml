@@ -50,16 +50,28 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt
 
+      # These probes import the same native stack that aborts, so they can
+      # abort as well. That is data, not an obstacle: never let them decide
+      # whether the measurement runs.
       - name: Record the stack under test
+        continue-on-error: true
+        shell: bash
         run: |
+          set +e
           python -c "import pandas, pyarrow, fsspec; print('pandas', pandas.__version__); print('pyarrow', pyarrow.__version__); print('fsspec', fsspec.__version__)"
+          echo "import_probe_exit=$?"
           python -c "import pyarrow; print('arrow cpu threads', pyarrow.cpu_count(), 'io threads', pyarrow.io_thread_count())"
+          echo "arrow_probe_exit=$?"
 
       - name: Run the ingest step repeatedly and count aborts
         id: measure
         shell: bash
         run: |
+          # GitHub starts this shell with -e already set. Clear it, or the
+          # first abort kills the harness that exists to count aborts.
+          set +e
           set -uo pipefail
+
           iterations="${{ inputs.iterations }}"
           if [ -z "${iterations}" ]; then iterations=150; fi
 
@@ -81,20 +93,32 @@ jobs:
             fi
             if [ "${status}" -eq 134 ] || [ "${status}" -eq 250 ]; then
               aborts=$((aborts + 1))
-              echo "--- iteration ${i}: exit ${status} ---"
-              cat "${out}"
+              if [ "${aborts}" -le 3 ]; then
+                echo "--- iteration ${i}: exit ${status} ---"
+                cat "${out}"
+              fi
             else
               other=$((other + 1))
-              echo "--- iteration ${i}: unexpected exit ${status} ---"
-              cat "${out}"
+              if [ "${other}" -le 3 ]; then
+                echo "--- iteration ${i}: unexpected exit ${status} ---"
+                cat "${out}"
+              fi
             fi
           done
 
-          echo "iterations=${iterations}" >> "$GITHUB_OUTPUT"
-          echo "passed=${passed}" >> "$GITHUB_OUTPUT"
-          echo "aborts=${aborts}" >> "$GITHUB_OUTPUT"
-          echo "other=${other}" >> "$GITHUB_OUTPUT"
+          {
+            echo "iterations=${iterations}"
+            echo "passed=${passed}"
+            echo "aborts=${aborts}"
+            echo "other=${other}"
+          } >> "$GITHUB_OUTPUT"
+          echo "===== OTOMATIK KONTROL ====="
+          echo "iterations: ${iterations}"
+          echo "passed: ${passed}"
+          echo "sigabrt: ${aborts}"
+          echo "other_nonzero: ${other}"
           echo "::error title=teardown abort rate::iterations=${iterations} passed=${passed} sigabrt=${aborts} other_nonzero=${other}"
+          exit 0
 
       - name: Preserve the failing iterations
         if: always()
