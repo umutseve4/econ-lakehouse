@@ -1,0 +1,125 @@
+name: audit-002-agirlik-siniri
+
+# Bu is akisi, audits/002-agirlik-siniri/README.md icindeki HER sayiyi ham
+# CSV'den yeniden hesaplar. Rapordaki bir sayi veriyle uyusmazsa kirmizi olur.
+#
+# 002'ye ozel iki koruma daha vardir:
+#  - Durdurma kurali 1 gercekten atesledi mi (Katman A kirildi mi) dogrulanir.
+#  - Katman B ve C fonksiyonlarinin koda geri sizmadigi dogrulanir. Rapor
+#    "hesaplanmadi" diyorsa bu bir iddia degil, uygulanan bir kisittir.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "audits/002-agirlik-siniri/**"
+      - "tests/test_audit_002.py"
+      - ".github/workflows/audit-002.yml"
+  pull_request:
+    paths:
+      - "audits/002-agirlik-siniri/**"
+      - "tests/test_audit_002.py"
+      - ".github/workflows/audit-002.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  denetim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # on-kayit sira testi tam gecmis ister
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Denetimi kos ve beyanlari dogrula
+        run: python audits/002-agirlik-siniri/audit.py --check
+
+      - name: Ham veri degismedigini dogrula
+        run: |
+          git diff --exit-code -- audits/002-agirlik-siniri/data/ \
+            || { echo "HATA: denetim ham veriyi degistirdi"; exit 1; }
+
+      # results.json yeniden uretilir ve commit edilmis dosyayla byte byte
+      # karsilastirilir. Sonuc dosyasi elle duzenlenirse burasi kirilir.
+      - name: results.json yeniden uret ve karsilastir
+        run: |
+          cp audits/002-agirlik-siniri/results.json /tmp/results-commit.json
+          python audits/002-agirlik-siniri/audit.py --json
+          diff -u /tmp/results-commit.json audits/002-agirlik-siniri/results.json \
+            || { echo "HATA: results.json hesaplanan degerlerle ayrismis"; exit 1; }
+          echo "results.json birebir yeniden uretildi."
+
+      # Protokoldeki durdurma kurali 1 gercekten isledi mi.
+      - name: Durdurma kurali 1 atesledigini dogrula
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          d = pathlib.Path("audits/002-agirlik-siniri")
+          r = json.loads((d / "results.json").read_text(encoding="utf-8"))
+          a = r["katman_a"]
+          if a["sonuc"] != "KIRILDI":
+              sys.exit("HATA: Katman A artik kirilmiyor, rapor gecersiz")
+          if not r.get("durdurma_kurali_1", {}).get("atesledi"):
+              sys.exit("HATA: durdurma kurali 1 atesmedi ama rapor atesledi diyor")
+          for yasak in ("katman_b", "katman_c"):
+              if yasak in r:
+                  sys.exit("HATA: yayimlanmamasi gereken %s sonuclarda" % yasak)
+          print("Durdurma kurali 1 atesledi, Katman B ve C yok. Artik %.6f pp, zarfin %.2f kati."
+                % (a["artik"], a["artik_zarf_kati"]))
+          PY
+
+      # Rapordaki manset sayilar results.json ile birebir tutmali.
+      - name: Rapordaki sayilari results.json ile karsilastir
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          d = pathlib.Path("audits/002-agirlik-siniri")
+          a = json.loads((d / "results.json").read_text(encoding="utf-8"))["katman_a"]
+          txt = (d / "README.md").read_text(encoding="utf-8")
+          beklenen = {
+              "hesaplanan": "%.6f" % a["hesaplanan"],
+              "artik": "%.6f" % abs(a["artik"]),
+              "zarf_alt": "%.6f" % a["zarf_alt"],
+              "zarf_ust": "%.6f" % a["zarf_ust"],
+              "zarf_yari": "%.6f" % a["zarf_yari_genislik"],
+              "uzaklik": "%.6f" % a["sinira_uzaklik"],
+              "kat": "%.2f" % a["artik_zarf_kati"],
+          }
+          eksik = [k for k, v in beklenen.items() if v.replace(".", ",") not in txt]
+          if eksik:
+              sys.exit("HATA: README su degerleri gostermiyor: %s (%s)"
+                       % (eksik, {k: beklenen[k] for k in eksik}))
+          print("README'deki %d manset sayinin tamami results.json ile tuttu." % len(beklenen))
+          PY
+
+      - name: Katman B ve C koda sizmamis
+        run: |
+          if grep -nE '^def (katman_b|katman_c)' audits/002-agirlik-siniri/audit.py; then
+            echo "HATA: durdurma kurali 1 isledigi halde Katman B veya C kodda"
+            exit 1
+          fi
+          echo "Katman B ve C fonksiyonlari yok, kural yapisal olarak uygulanmis."
+
+      - name: pytest
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest tests/test_audit_002.py -v
+
+      - name: On-kayit sirasini goster
+        if: always()
+        run: |
+          echo "PROTOCOL.md ve sonuc dosyalarinin ilk commit sirasi:"
+          git log --reverse --format='%h %ad %s' --date=iso \
+            -- audits/002-agirlik-siniri/ | head -20
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-002-results
+          path: audits/002-agirlik-siniri/results.json
