@@ -3,15 +3,15 @@ name: one-shot-patch-kok-readme
 # TEK SEFERLIK. Kok README.md buyuk bir dosya; elle yeniden yazmak bayt
 # duzeyinde bozulma riski tasiyor. Bunun yerine capasi tam bir kez eslesen
 # bir yama betigi calistirip sonucu commit ediyoruz. Eklenecek metin
-# .github/one-shot/denetim-001-blok.md icinde. Yama basildiktan sonra hem
-# bu dosya hem blok dosyasi ayni pull request icinde silinir.
+# .github/one-shot/denetim-001-blok.md icinde. Yama basildiktan sonra bu
+# uc dosya da ayni pull request icinde silinir.
 
 on:
   push:
     branches: [denetim-001-kok-readme]
     paths:
       - ".github/workflows/one-shot-patch-kok-readme.yml"
-      - ".github/one-shot/denetim-001-blok.md"
+      - ".github/one-shot/**"
   workflow_dispatch:
 
 permissions:
@@ -24,8 +24,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: README'yi yamala
-        run: |
-          python .github/one-shot/patch_kok_readme.py
+        run: python .github/one-shot/patch_kok_readme.py
 
       - name: Sonucu dogrula
         run: |
