@@ -1,0 +1,27 @@
+# The dependency intent. This is the only dependency file that is edited by
+# hand. The resolved set lives in `requirements.txt`, which is generated from
+# this file by `.github/workflows/lockfile.yml` and must not be hand-edited.
+#
+# Bounds, not floors. A bare `>=` accepts the next major release of every one
+# of these projects on the day it is published, which is how a repository that
+# changed nothing gets a different execution stack on Tuesday than it had on
+# Monday. Each line below therefore states both the oldest release known to
+# work and the first release not covered by that knowledge.
+
+pandas>=3.0.5,<4
+pyarrow>=25.0.1,<26
+duckdb>=1.5.5,<2
+dbt-duckdb>=1.11.0,<2
+
+# fsspec and s3fs use calendar versioning and are released in lockstep; the
+# bound is the next calendar year rather than the next major.
+fsspec>=2026.7.0,<2027
+s3fs>=2026.7.0,<2027
+
+# Pre-1.0 projects break on minor bumps, so the bound is the next minor.
+fastapi>=0.141.1,<0.142
+uvicorn>=0.52.4,<0.53
+httpx>=0.28.1,<0.29
+
+dagster>=1.13.21,<2
+streamlit>=1.63.0,<2
