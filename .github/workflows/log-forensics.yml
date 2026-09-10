@@ -1,0 +1,82 @@
+name: log forensics
+
+# #63, #68 and #70 are three separate intermittent failures, and all three are
+# blocked on the same missing fact: what the failing step actually printed.
+# Each issue says the log "could not be obtained from this environment".
+#
+# The runner is in that environment. `gh run view --log-failed` returns the
+# output of exactly the steps that failed, so this workflow retrieves it for
+# the specific runs those issues name and republishes it in two places:
+# an artifact, and error annotations that are readable through the API.
+#
+# It only reads. Nothing here re-runs a pipeline, and nothing here decides
+# whether a flake is fixed.
+
+on:
+  push:
+    branches:
+      - "ops/**"
+    paths:
+      - ".github/workflows/log-forensics.yml"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Space-separated run ids to retrieve failed step logs for"
+        required: false
+        default: ""
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # 33964738277: #63, pipeline / dashboard-smoke step 7, 2026-09-05
+      # 33982259880: #68, run-audit step 10, 2026-09-05
+      # 34027310847: #70, run-audit step 9 on main, 2026-09-06
+      DEFAULT_RUNS: "33964738277 33982259880 34027310847"
+    steps:
+      - name: Retrieve the failed steps
+        shell: bash
+        run: |
+          set -uo pipefail
+          runs="${{ inputs.runs }}"
+          if [ -z "${runs}" ]; then runs="${DEFAULT_RUNS}"; fi
+          mkdir -p forensics
+          for run in ${runs}; do
+            echo "::group::run ${run}"
+            gh run view "${run}" --repo "${GITHUB_REPOSITORY}" \
+              --json databaseId,event,headSha,conclusion,createdAt,displayTitle,jobs \
+              > "forensics/${run}.meta.json" 2> "forensics/${run}.meta.err" \
+              || echo "metadata unavailable for ${run}: $(cat "forensics/${run}.meta.err")"
+
+            gh run view "${run}" --repo "${GITHUB_REPOSITORY}" --log-failed \
+              > "forensics/${run}.failed.log" 2> "forensics/${run}.failed.err" \
+              || echo "failed-step log unavailable for ${run}: $(cat "forensics/${run}.failed.err")"
+
+            # Republished text is trimmed to the failing step and stripped of
+            # anything shaped like a credential. GitHub already masks registered
+            # secrets, so this is a second layer rather than the only one.
+            sed -E 's/[A-Za-z0-9_-]{32,}/[REDACTED-LONG-TOKEN]/g' \
+              "forensics/${run}.failed.log" > "forensics/${run}.failed.redacted.log"
+
+            echo "--- ${run}: bytes=$(wc -c < "forensics/${run}.failed.log") ---"
+            tail -c 4000 "forensics/${run}.failed.redacted.log"
+            echo "::endgroup::"
+
+            tail -c 1800 "forensics/${run}.failed.redacted.log" | tr '\n' '~' > /tmp/tail.txt
+            echo "::error title=failed step log ${run}::$(cat /tmp/tail.txt)"
+          done
+
+      - name: Preserve the retrieved logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flake-forensics
+          path: forensics/
+          if-no-files-found: error
+          retention-days: 30
