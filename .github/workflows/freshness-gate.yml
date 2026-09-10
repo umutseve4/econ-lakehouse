@@ -41,6 +41,12 @@ jobs:
           node-version: "22"
       - name: Failure-alert dedup decision tests (offline)
         run: node tests/test_alert_dedup.js
+      # The step above only proves the suite executed. This one removes the
+      # behaviour the suite claims to protect and requires the suite to go
+      # red, then restores it. Without this, an assertion could rot into a
+      # no-op and the check would stay green.
+      - name: Prove the dedup suite is load-bearing (mutation)
+        run: bash tools/prove_alert_dedup.sh
 
   live-gate:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
