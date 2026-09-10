@@ -1,0 +1,55 @@
+name: forensics 60
+
+# One-shot. #60 has an explicit acceptance box: "The raw log for at least one
+# of the two failures is read and the actual exception recorded here." The
+# issue could not read them because raw logs need a signed-in browser.
+#
+# The runner does not. This retrieves the failed-step logs for the three runs
+# #60 names, and republishes a window around the error marker as annotations.
+#
+# Read-only. It re-runs nothing and decides nothing. Delete after use.
+
+on:
+  push:
+    branches:
+      - "ops/**"
+    paths:
+      - ".github/workflows/forensics-60.yml"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # 33961541816: audit, step 7 "Concurrency proofs", main @ 3542cee5
+      # 33961541818: pipeline / docker-smoke, step 5
+      # 33961221722: the 10:38 dashboard-smoke failure on main @ 28dffa88
+      RUNS: "33961541816 33961541818 33961221722"
+    steps:
+      - name: Retrieve the failed steps
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p forensics
+          for run in ${RUNS}; do
+            gh run view "${run}" --repo "${GITHUB_REPOSITORY}" --log-failed \
+              > "forensics/${run}.failed.log" 2> "forensics/${run}.failed.err" \
+              || echo "unavailable for ${run}: $(cat "forensics/${run}.failed.err")"
+            sed -E 's/[A-Za-z0-9_-]{32,}/[REDACTED-LONG-TOKEN]/g' \
+              "forensics/${run}.failed.log" > "forensics/${run}.redacted.log"
+          done
+          python3 tools/forensics_window.py ${RUNS}
+
+      - name: Preserve the retrieved logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forensics-60
+          path: forensics/
+          if-no-files-found: error
+          retention-days: 30
