@@ -2,14 +2,16 @@ name: one-shot-patch-kok-readme
 
 # TEK SEFERLIK. Kok README.md buyuk bir dosya; elle yeniden yazmak bayt
 # duzeyinde bozulma riski tasiyor. Bunun yerine capasi tam bir kez eslesen
-# bir yama betigi calistirip sonucu commit ediyoruz. Yama basildiktan sonra
-# bu dosya ayni pull request icinde silinir.
+# bir yama betigi calistirip sonucu commit ediyoruz. Eklenecek metin
+# .github/one-shot/denetim-001-blok.md icinde. Yama basildiktan sonra hem
+# bu dosya hem blok dosyasi ayni pull request icinde silinir.
 
 on:
   push:
     branches: [denetim-001-kok-readme]
     paths:
       - ".github/workflows/one-shot-patch-kok-readme.yml"
+      - ".github/one-shot/denetim-001-blok.md"
   workflow_dispatch:
 
 permissions:
@@ -23,66 +25,7 @@ jobs:
 
       - name: README'yi yamala
         run: |
-          python - <<'PY'
-          import pathlib, sys
-
-          p = pathlib.Path("README.md")
-          t = p.read_text(encoding="utf-8")
-
-          capa = "---\n\n## Run the whole thing in four commands"
-
-          if "## Audit 001" in t:
-              sys.exit("HATA: bolum zaten var, yama iki kez uygulanmis olabilir")
-
-          hits = t.count(capa)
-          if hits != 1:
-              sys.exit("HATA: capa %d kez bulundu, tam 1 bekleniyordu" % hits)
-
-          blok = """---
-
-## Audit 001: is the Turkish CPI gap an arithmetic error?
-
-For August 2026 the official institute (TUIK) published **31.51%** annual CPI
-inflation. The independent group (ENAG) published **49.03%** for the same month.
-A common claim on both sides is that the other one cannot even add up correctly.
-
-This repository now contains an audit that tests exactly that claim, applying one
-identical test to both institutions.
-
-| | internal arithmetic test | reproducibility scorecard |
-|---|---|---|
-| **TUIK** | PASS, 64 of 64 months clean | 8/8 |
-| **ENAG** | PASS, uses 17.9% of the rounding envelope | 2/8 |
-
-**Neither side has an arithmetic error.** The 17.5 point gap does not come from
-addition. It comes from the basket, the weights and the price collection method.
-The real asymmetry is not accuracy but auditability: a third party can rebuild the
-TUIK figure end to end and cannot rebuild the ENAG one.
-
-```bash
-python audits/001-tufe-aritmetigi/audit.py --check
-```
-
-No dependencies, standard library only. Every number in the report is recomputed
-from the raw CSV; if one drifts, the exit code is 1 and CI turns red.
-
-- **[Read the audit](audits/001-tufe-aritmetigi/README.md)** (in Turkish)
-- [Pre-registered protocol](audits/001-tufe-aritmetigi/PROTOCOL.md), committed in
-  its own earlier commit; the ordering is asserted from git history by a test
-- [Appendix A](audits/001-tufe-aritmetigi/EK-A-artik-tablosu.md), the full 64 row
-  residual table, regenerated and byte-compared by CI on every run
-- [Sources](audits/001-tufe-aritmetigi/data/SOURCES.md), one code per data cell
-
-The report also carries its own error log. The first published version named the
-wrong month for the largest residual. That version **failed CI** at commit
-`f55ca86`, the correction passed at `55a2beb`, and both states remain in history.
-The guard was proved by a real break, not by a claim.
-
-"""
-
-          p.write_text(t.replace(capa, blok + capa, 1), encoding="utf-8")
-          print("yama uygulandi")
-          PY
+          python .github/one-shot/patch_kok_readme.py
 
       - name: Sonucu dogrula
         run: |
@@ -94,6 +37,10 @@ The guard was proved by a real break, not by a claim.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- README.md; then
+            echo "README degismedi, push edilecek bir sey yok"
+            exit 0
+          fi
           git add README.md
           git commit -m "Kok README: Denetim 001 bolumu (CI yamasi, elle yazilmadi)"
           git push
