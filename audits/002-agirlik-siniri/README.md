@@ -164,6 +164,7 @@ kanıt zinciri bölümü.
 | Veri bozulursa kontrol kırılıyor | `tests/test_audit_002.py::test_mutasyon_kontrolu_kirar` |
 | Durdurma kuralı 1 kodda uygulanmış | `audit.py`, Katman B ve C fonksiyonları yok, test bunu doğruluyor |
 | Kaynaklar hücre bazında kodlanmış | [`data/SOURCES.md`](data/SOURCES.md) |
+| Rapor ile veri ayrışırsa CI gerçekten kırmızı oluyor | `2f01c40` FAILURE (yalnız adım 8, adım 9 ve 10 SKIPPED), `bffd2f5` SUCCESS |
 
 ## Sonraki tur için bırakılan soru
 
