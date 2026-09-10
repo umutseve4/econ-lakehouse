@@ -1,0 +1,106 @@
+name: teardown abort reproduction
+
+# #63, #68 and #70 were filed as three unrelated intermittent failures.
+# The retrieved logs say otherwise. In all three the ingest child process
+# completed its work, printed its own "RESULT: PASS" block, and only then
+# died:
+#
+#   RESULT: PASS
+#   terminate called without an active exception
+#   step failed: <step> (exit -6)
+#
+# Exit -6 is SIGABRT, and "terminate called without an active exception" is
+# a C++ runtime message, not a Python one: a std::thread was destroyed while
+# still joinable. The failing runs also took about four seconds longer than
+# the passing ones, which is time spent in shutdown, not in ingest.
+#
+# This workflow does not fix anything. It measures. It runs the exact ingest
+# command in a loop and reports how many iterations abort after a successful
+# check block, so any later claim of a fix has a baseline to be compared to.
+
+on:
+  push:
+    branches:
+      - "fix/**"
+    paths:
+      - ".github/workflows/teardown-abort-repro.yml"
+      - "ingest/ingest.py"
+      - "ingest/storage.py"
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "How many ingest runs per phase"
+        required: false
+        default: "150"
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@e348410e00f449ec0857ee500de1a4a1a9be9cc0 # v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+
+      - name: Record the stack under test
+        run: |
+          python -c "import pandas, pyarrow, fsspec; print('pandas', pandas.__version__); print('pyarrow', pyarrow.__version__); print('fsspec', fsspec.__version__)"
+          python -c "import pyarrow; print('arrow cpu threads', pyarrow.cpu_count(), 'io threads', pyarrow.io_thread_count())"
+
+      - name: Run the ingest step repeatedly and count aborts
+        id: measure
+        shell: bash
+        run: |
+          set -uo pipefail
+          iterations="${{ inputs.iterations }}"
+          if [ -z "${iterations}" ]; then iterations=150; fi
+          echo "iterations=${iterations}" >> "$GITHUB_OUTPUT"
+
+          aborts=0
+          other=0
+          passed=0
+          mkdir -p repro
+          for i in $(seq 1 "${iterations}"); do
+            out="repro/run-${i}.log"
+            python ingest/ingest.py \
+              --source data/sample/cpi_fixture.csv \
+              --out warehouse/bronze \
+              --source-name fixture:synthetic > "${out}" 2>&1
+            status=$?
+            if [ "${status}" -eq 0 ]; then
+              passed=$((passed + 1))
+              rm -f "${out}"
+              continue
+            fi
+            if [ "${status}" -eq 134 ] || [ "${status}" -eq 250 ]; then
+              aborts=$((aborts + 1))
+              echo "--- iteration ${i}: exit ${status} ---"
+              cat "${out}"
+            else
+              other=$((other + 1))
+              echo "--- iteration ${i}: unexpected exit ${status} ---"
+              cat "${out}"
+            fi
+          done
+
+          echo "passed=${passed}" >> "$GITHUB_OUTPUT"
+          echo "aborts=${aborts}" >> "$GITHUB_OUTPUT"
+          echo "other=${other}" >> "$GITHUB_OUTPUT"
+          echo "::error title=teardown abort rate::iterations=${iterations} passed=${passed} sigabrt=${aborts} other_nonzero=${other}"
+
+      - name: Preserve the failing iterations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: teardown-abort-repro
+          path: repro/
+          if-no-files-found: ignore
+          retention-days: 30
