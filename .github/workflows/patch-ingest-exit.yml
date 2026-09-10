@@ -1,9 +1,9 @@
 name: one-shot patch (ingest exit path)
 
-# Retyping a source file from a conversation does not hold at the byte level.
-# This applies the #68 fix as two anchored substitutions instead: each anchor
-# must match exactly once, or the job fails and nothing is written. It is
-# disposable and is deleted in the same pull request that merges the fix.
+# Disposable. Runs tools/patch_ingest_exit.py, which changes two anchored
+# regions of ingest/ingest.py and fails if either anchor does not match
+# exactly once. Both this workflow and the script are deleted in the pull
+# request that merges the fix.
 
 on:
   workflow_dispatch:
@@ -12,6 +12,7 @@ on:
       - "fix/**"
     paths:
       - ".github/workflows/patch-ingest-exit.yml"
+      - "tools/patch_ingest_exit.py"
 
 permissions:
   contents: write
@@ -25,91 +26,25 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
 
-      - name: Apply anchored substitutions
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Apply the anchored patch
+        run: python tools/patch_ingest_exit.py
+
+      - name: Prove the result parses and the old exit path is gone
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("ingest/ingest.py")
-          text = path.read_text(encoding="utf-8")
-
-          if "_exit_without_teardown" in text:
-              raise SystemExit("already patched, refusing to patch twice")
-
-          def substitute(source: str, old: str, new: str, label: str) -> str:
-              hits = source.count(old)
-              if hits != 1:
-                  raise SystemExit(f"anchor {label!r} matched {hits} times, expected 1")
-              return source.replace(old, new)
-
-          text = substitute(
-              text,
-              "import argparse\nimport sys\n",
-              "import argparse\nimport os\nimport sys\n",
-              "imports",
-          )
-
-          guard = '''
-
-def _exit_without_teardown(status: int) -> int:
-    """Leave the process immediately, skipping every teardown handler.
-
-    This CLI is a leaf: when main() returns, all work is finished and
-    durable. The Parquet partitions were written and closed by
-    write_bronze(), and count_bronze_rows() has already re-read them from
-    storage in a separate pass, so the check block printed above is a
-    statement about bytes that exist on disk, not about buffers.
-
-    What remains after that point is pure shutdown, and shutdown is where
-    #63, #68 and #70 died. In all three the child printed "RESULT: PASS"
-    and then emitted "terminate called without an active exception" and
-    exit -6 (SIGABRT). That message is from the C++ runtime: a std::thread
-    destroyed while still joinable, during the static-destructor phase that
-    runs after CPython finalises. The failing runs also spent about four
-    seconds longer than the passing ones, and that time was spent in
-    shutdown rather than in ingest.
-
-    os._exit() bypasses that phase entirely: no atexit handlers, no
-    interpreter finalisation, no __cxa_atexit destructors. The exit status
-    the caller sees becomes exactly the status computed here. Because
-    os._exit() also skips buffer flushing, stdout and stderr are flushed
-    explicitly first, so the machine-readable check block is never lost.
-
-    Correctness note: this does not hide a failure. A non-zero status is
-    propagated unchanged, so a real ingest error still fails the pipeline.
-    It removes only the window in which an already-successful run could be
-    turned into a failure by teardown.
-    """
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(status)
-
-
-if __name__ == "__main__":
-    _exit_without_teardown(main())
-'''
-
-          text = substitute(
-              text,
-              '\n\nif __name__ == "__main__":\n    sys.exit(main())\n',
-              guard,
-              "main guard",
-          )
-
-          path.write_text(text, encoding="utf-8")
-          print("patched ingest/ingest.py")
-          PY
-
-      - name: Prove the patched file still imports and still exits correctly
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -c "import ast,pathlib; ast.parse(pathlib.Path('ingest/ingest.py').read_text())"
+          python -c "import ast, pathlib; ast.parse(pathlib.Path('ingest/ingest.py').read_text())"
           echo "syntax: ok"
           grep -n "os._exit(status)" ingest/ingest.py
-          grep -c "sys.exit(main())" ingest/ingest.py && exit 1 || echo "old exit path: gone"
+          if grep -q "sys.exit(main())" ingest/ingest.py; then
+            echo "old exit path still present"
+            exit 1
+          fi
+          echo "old exit path: gone"
 
       - name: Commit the patch
         shell: bash
