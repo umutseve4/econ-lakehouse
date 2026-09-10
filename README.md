@@ -65,6 +65,58 @@ The guard was proved by a real break, not by a claim.
 
 ---
 
+## Audit 002: can the weights alone produce the gap?
+
+Audit 001 named the basket as the source of the gap but did not measure it.
+Audit 002 was the attempt to measure it, and it **stopped, because my own
+pre-registered hypothesis turned out to be wrong**.
+
+The pre-registered Layer A identity was that the published headline equals
+the weighted mean of the 13 main-group annual rates. It does not hold for
+August 2026:
+
+| quantity | value |
+|---|---:|
+| computed annual rate | 31.278154% |
+| published annual rate | 31.51% |
+| residual | -0.231846 points |
+| rounding envelope half-width | 0.015163 points |
+| residual / envelope half-width | **15.29x** |
+
+The published headline sits outside the envelope even when the envelope is
+built in the most generous way available, so rounding cannot explain it.
+
+**This is not a TUIK error.** TUIK's own 13 published annual contributions
+sum to exactly 31.51 with a residual of 0.000000, so the data is internally
+consistent and correctly transcribed. What broke is the aggregation model
+**I** wrote into the protocol: the annual headline is not a simple weighted
+mean of current-year weights.
+
+Pre-registered stopping rule 1 fired, so Layer B and Layer C were never
+computed and never published. That constraint is enforced by code rather
+than asserted in prose: the functions `katman_b` and `katman_c` do not exist
+in `audit.py`, and both a test and a CI `grep` step turn red if they
+reappear. The pre-registered question was left unanswered and **was not
+rewritten** after the result was seen.
+
+```bash
+python audits/002-agirlik-siniri/audit.py --json --check
+```
+
+- **[Read the audit](audits/002-agirlik-siniri/README.md)** (in Turkish)
+- [Pre-registered protocol](audits/002-agirlik-siniri/PROTOCOL.md), commit
+  `4b1e27f`, committed alone before any data was fetched
+- [Sources](audits/002-agirlik-siniri/data/SOURCES.md), one code per data
+  cell, with the full-table dependence on a secondary source stated as a
+  limitation
+
+The report-versus-data guard was again proved by a real break rather than a
+claim: a deliberately wrong number was published to the report, CI failed at
+commit `2f01c40` on exactly that step with the following steps skipped, and
+the correction passed at `bffd2f5`.
+
+---
+
 ## Run the whole thing in four commands
 
 ```bash
