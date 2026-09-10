@@ -10,7 +10,7 @@ testle zorunlu tutulur.
 **Denetim durdu, çünkü kendi hipotezim yanlış çıktı.** Ön kayıtta yazdığım
 Katman A özdeşliği (13 grup ağırlığının 13 grup yıllık oranıyla ağırlıklı
 ortalaması manşeti verir) tutmuyor: hesaplanan **%31,278154**, yayımlanan
-**%31,51**, artık **-0,231846 puan**, yuvarlama zarfının **12,00 katı**.
+**%31,51**, artık **-0,231846 puan**, yuvarlama zarfının **15,29 katı**.
 Protokoldeki durdurma kuralı 1 gereği Katman B ve Katman C hesaplanmadı ve
 yayımlanmadı.
 
@@ -52,7 +52,7 @@ r_hesaplanan = toplam(w_i * r_i) / toplam(w_i)
 | Zarf yarı genişliği | 0,015163 puan |
 | Yayımlanan değer zarfın içinde mi | **Hayır** |
 | En yakın sınıra uzaklık | 0,216682 puan |
-| Artık / zarf yarı genişliği | **12,00 kat** |
+| Artık / zarf yarı genişliği | **15,29 kat** |
 | Sonuç | **KIRILDI** |
 
 Zarf sabit alınmadı. Hem ağırlıklar hem oranlar iki ondalıkla yayımlandığı
