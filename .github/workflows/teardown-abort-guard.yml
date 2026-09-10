@@ -1,0 +1,187 @@
+name: teardown abort guard
+
+# Why this exists instead of a longer repro loop.
+#
+# The abort in #63, #68 and #70 is probabilistic. Run 34511060368 hit it
+# within the first ~15 ingest invocations; run 34511391942 ran 150 and hit
+# it zero times. Averages over a coin flip cannot demonstrate that a fix
+# works, and "the flake did not happen this time" is not evidence.
+#
+# So this proves the guard structurally. The failure mode is: the process
+# finishes its work, prints RESULT: PASS, main() returns 0, and the process
+# then dies during shutdown. tests/support/teardown_abort_injector reproduces
+# exactly that shape on demand via an atexit hook. Four phases:
+#
+#   1. guard present  + abort injected  -> must exit 0 and keep its output
+#   2. guard removed  + abort injected  -> must exit 134 (the injection is real)
+#   3. guard restored + nothing injected -> must exit 0 (nothing else broke)
+#   4. guard present  + a real ingest error -> must exit 1 (failures still fail)
+#
+# Phase 2 is the one that matters. Without it, phase 1 could pass because the
+# injection never fired, and the whole file would be theatre.
+
+on:
+  push:
+    branches:
+      - "fix/**"
+    paths:
+      - ".github/workflows/teardown-abort-guard.yml"
+      - "ingest/ingest.py"
+      - "tests/support/teardown_abort_injector/sitecustomize.py"
+  pull_request:
+    paths:
+      - ".github/workflows/teardown-abort-guard.yml"
+      - "ingest/ingest.py"
+      - "tests/support/teardown_abort_injector/sitecustomize.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      INJECTOR: tests/support/teardown_abort_injector
+      SOURCE: data/sample/cpi_fixture.csv
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Phase 1 - guard present, teardown abort injected
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          INJECT_TEARDOWN_ABORT=1 PYTHONPATH="$INJECTOR" \
+            python ingest/ingest.py --source "$SOURCE" --out warehouse/bronze \
+            --source-name fixture:synthetic > phase1.log 2>&1
+          status=$?
+          cat phase1.log
+          echo "===== OTOMATIK KONTROL ====="
+          echo "phase1_exit: ${status}"
+          if [ "${status}" -ne 0 ]; then
+            echo "RESULT: FAIL (guard did not hold)"
+            exit 1
+          fi
+          if ! grep -q "^RESULT: PASS$" phase1.log; then
+            echo "RESULT: FAIL (check block lost to the unflushed-buffer hazard of os._exit)"
+            exit 1
+          fi
+          if grep -q "aborting during interpreter teardown" phase1.log; then
+            echo "RESULT: FAIL (the atexit hook ran, so the guard is not skipping teardown)"
+            exit 1
+          fi
+          echo "RESULT: PASS"
+
+      - name: Phase 1b - the data written before the guard exited is readable
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - > phase1b.log 2>&1 <<'CHECK'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, ".")
+          from ingest.ingest import count_bronze_rows
+          rows = count_bronze_rows(Path("warehouse/bronze"))
+          print("===== OTOMATIK KONTROL =====")
+          print("bronze_rows_after_guarded_exit:", rows)
+          print("RESULT:", "PASS" if rows > 0 else "FAIL")
+          sys.exit(0 if rows > 0 else 1)
+          CHECK
+          cat phase1b.log
+
+      - name: Phase 2 - remove the guard, same injection, must abort
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          hits=$(grep -c "_exit_without_teardown(main())" ingest/ingest.py)
+          if [ "${hits}" -ne 1 ]; then
+            echo "mutation anchor matched ${hits} times, expected 1"
+            exit 1
+          fi
+          sed -i "s/_exit_without_teardown(main())/sys.exit(main())/" ingest/ingest.py
+          grep -n "sys.exit(main())" ingest/ingest.py
+          INJECT_TEARDOWN_ABORT=1 PYTHONPATH="$INJECTOR" \
+            python ingest/ingest.py --source "$SOURCE" --out warehouse/bronze \
+            --source-name fixture:synthetic > phase2.log 2>&1
+          status=$?
+          cat phase2.log
+          echo "===== OTOMATIK KONTROL ====="
+          echo "phase2_exit: ${status}"
+          if [ "${status}" -ne 134 ]; then
+            echo "RESULT: FAIL (expected SIGABRT/134 without the guard; the injection is not proving anything)"
+            exit 1
+          fi
+          if ! grep -q "^RESULT: PASS$" phase2.log; then
+            echo "RESULT: FAIL (the mutant should still complete its work before dying)"
+            exit 1
+          fi
+          if ! grep -q "aborting during interpreter teardown" phase2.log; then
+            echo "RESULT: FAIL (died for some other reason than the injected teardown abort)"
+            exit 1
+          fi
+          echo "RESULT: PASS (unguarded run dies 134 after a successful pass, exactly as in #68)"
+
+      - name: Phase 3 - restore the guard, no injection
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          git checkout -- ingest/ingest.py
+          if ! git diff --quiet -- ingest/ingest.py; then
+            echo "restore failed; refusing to continue against a mutated tree"
+            exit 1
+          fi
+          python ingest/ingest.py --source "$SOURCE" --out warehouse/bronze \
+            --source-name fixture:synthetic > phase3.log 2>&1
+          status=$?
+          cat phase3.log
+          echo "===== OTOMATIK KONTROL ====="
+          echo "phase3_exit: ${status}"
+          if [ "${status}" -ne 0 ] || ! grep -q "^RESULT: PASS$" phase3.log; then
+            echo "RESULT: FAIL"
+            exit 1
+          fi
+          echo "RESULT: PASS"
+
+      - name: Phase 4 - a real ingest failure must still fail
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          python ingest/ingest.py --source data/sample/does-not-exist.csv \
+            --out warehouse/bronze --source-name fixture:missing > phase4.log 2>&1
+          status=$?
+          cat phase4.log
+          echo "===== OTOMATIK KONTROL ====="
+          echo "phase4_exit: ${status}"
+          if [ "${status}" -ne 1 ]; then
+            echo "RESULT: FAIL (os._exit must propagate a non-zero status unchanged)"
+            exit 1
+          fi
+          if ! grep -q "^RESULT: FAIL$" phase4.log; then
+            echo "RESULT: FAIL (the failing check block was lost)"
+            exit 1
+          fi
+          echo "RESULT: PASS (failures are still failures)"
+
+      - name: Preserve phase logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: teardown-abort-guard-${{ github.sha }}
+          path: phase*.log
+          if-no-files-found: warn
+          retention-days: 30
