@@ -1,0 +1,60 @@
+name: audit-001-tufe-aritmetigi
+
+# Bu is akisi, audits/001-tufe-aritmetigi/README.md icindeki HER sayiyi
+# ham CSV'den yeniden hesaplar. Rapordaki bir sayi veriyle uyusmazsa
+# kirmizi olur. Amac, raporun statik metin degil dogrulanan iddia olmasi.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "audits/001-tufe-aritmetigi/**"
+      - "tests/test_audit_001.py"
+      - ".github/workflows/audit-001.yml"
+  pull_request:
+    paths:
+      - "audits/001-tufe-aritmetigi/**"
+      - "tests/test_audit_001.py"
+      - ".github/workflows/audit-001.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  denetim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # on-kayit sira testi tam gecmis ister
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Denetimi kos ve beyanlari dogrula
+        run: python audits/001-tufe-aritmetigi/audit.py --check
+
+      - name: Kaynak dosyalari degismedigini dogrula
+        run: |
+          git diff --exit-code -- audits/001-tufe-aritmetigi/data/ \
+            || { echo "HATA: denetim ham veriyi degistirdi"; exit 1; }
+
+      - name: pytest
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest tests/test_audit_001.py -v
+
+      - name: On-kayit sirasini goster
+        if: always()
+        run: |
+          echo "PROTOCOL.md ve sonuc dosyalarinin ilk commit sirasi:"
+          git log --reverse --format='%h %ad %s' --date=iso \
+            -- audits/001-tufe-aritmetigi/ | head -20
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-001-results
+          path: audits/001-tufe-aritmetigi/results.json
