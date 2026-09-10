@@ -108,17 +108,21 @@ jobs:
           print("the environment matches the lock exactly: OK")
           PY
 
+      # Stage first. The previous revision diffed the working tree against
+      # HEAD, which reports no change for a file that git has never tracked,
+      # so the very first resolution was verified and then thrown away.
       - name: Commit the resolved set
         run: |
-          if git diff --quiet -- requirements.lock; then
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- requirements.lock
+          if git diff --cached --quiet -- requirements.lock; then
             echo "requirements.lock is already the current resolution; nothing to commit"
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add requirements.lock
           git commit -m "ops: regenerate requirements.lock from a resolver run"
           git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "committed $(git rev-parse HEAD)"
 
       - name: Upload the resolved set
         if: always()
