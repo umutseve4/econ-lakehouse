@@ -57,9 +57,13 @@ değişim. İkisi aynı hesaptan çıkar, dolayısıyla birbirini tutmak zorunda
 |---|---|
 | incelenen ay | 64 |
 | toleransı aşan ay | **0** |
-| en büyük mutlak artık | 0,004978 pp (2021-05) |
+| en büyük mutlak artık | 0,004978 pp (2025-11) |
 | ortalama mutlak artık | 0,002485 pp |
 | tolerans yarıçapı | 0,005288 - 0,007126 pp, **aya göre değişir** |
+
+Tam 64 satırlık artık tablosu: **[Ek A](EK-A-artik-tablosu.md)**. O tablo
+`audit.py` çıktısından üretilir ve CI her koşuda yeniden üretip commit edilmiş
+haliyle byte byte karşılaştırır. Elle bir satır değiştirilirse build kırılır.
 
 ### Tolerans neden sabit değil
 
@@ -76,7 +80,16 @@ alt = ((a - h) / (b + h) - 1) * 100 - h
 Yarıçap endeks büyüdükçe daralır: 2020'de 472 olan endekste 0,0071 pp,
 2025'te 3513 olan endekste 0,0053 pp. Doğru zarf, kullandığımdan **geniş**
 olduğu için karar değişmiyor. Ama düzeltmeden bırakmak sonucu şansa bırakmak
-olurdu. Tam 64 satırlık artık tablosu: [results.json](results.json), `katman_A.satirlar`.
+olurdu.
+
+### Bu bölümde bir hata yaptım ve düzelttim
+
+Raporun ilk halinde en büyük artığın ayını **2021-05** yazmıştım. Doğrusu
+**2025-11**. Hatayı, kendi ürettiğim Ek A tablosunu okurken buldum, dışarıdan
+biri uyarmadı. Düzeltmeyi silmek yerine buraya yazıyorum ve bu satırı da CI
+koruması altına aldım: iş akışı, en büyük artığın ayını `results.json`'dan
+hesaplayıp README'de arıyor, bulamazsa kırmızıya dönüyor. Commit geçmişinde
+hem hatalı hem düzeltilmiş hali duruyor.
 
 ---
 
@@ -201,6 +214,9 @@ Bunları saklamak yerine yazıyoruz, çünkü denetimin kendisi denetlenebilir o
 5. **Bu denetim hiçbir kurumun ölçtüğü enflasyonun doğru olup olmadığını
    söylemez.** Sadece yayımlanan sayıların kendi içinde tutarlı olup olmadığını
    ve dışarıdan izlenebilir olup olmadığını söyler.
+6. **Raporun ilk halinde bir olgu hatası vardı** (Katman A'da en büyük artığın
+   ayı). Düzeltildi ve yukarıda ayrı başlık altında yazıldı. Bir denetimin
+   kendi hata kaydını tutmaması, denetim olmadığının işaretidir.
 
 ---
 
