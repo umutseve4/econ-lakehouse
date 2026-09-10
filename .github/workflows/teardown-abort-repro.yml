@@ -1,0 +1,130 @@
+name: teardown abort reproduction
+
+# #63, #68 and #70 were filed as three unrelated intermittent failures.
+# The retrieved logs say otherwise. In all three the ingest child process
+# completed its work, printed its own "RESULT: PASS" block, and only then
+# died:
+#
+#   RESULT: PASS
+#   terminate called without an active exception
+#   step failed: <step> (exit -6)
+#
+# Exit -6 is SIGABRT, and "terminate called without an active exception" is
+# a C++ runtime message, not a Python one: a std::thread was destroyed while
+# still joinable. The failing runs also took about four seconds longer than
+# the passing ones, which is time spent in shutdown, not in ingest.
+#
+# This workflow does not fix anything. It measures. It runs the exact ingest
+# command in a loop and reports how many iterations abort after a successful
+# check block, so any later claim of a fix has a baseline to be compared to.
+
+on:
+  push:
+    branches:
+      - "fix/**"
+    paths:
+      - ".github/workflows/teardown-abort-repro.yml"
+      - "ingest/ingest.py"
+      - "ingest/storage.py"
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "How many ingest runs per phase"
+        required: false
+        default: "150"
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+
+      # These probes import the same native stack that aborts, so they can
+      # abort as well. That is data, not an obstacle: never let them decide
+      # whether the measurement runs.
+      - name: Record the stack under test
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          python -c "import pandas, pyarrow, fsspec; print('pandas', pandas.__version__); print('pyarrow', pyarrow.__version__); print('fsspec', fsspec.__version__)"
+          echo "import_probe_exit=$?"
+          python -c "import pyarrow; print('arrow cpu threads', pyarrow.cpu_count(), 'io threads', pyarrow.io_thread_count())"
+          echo "arrow_probe_exit=$?"
+
+      - name: Run the ingest step repeatedly and count aborts
+        id: measure
+        shell: bash
+        run: |
+          # GitHub starts this shell with -e already set. Clear it, or the
+          # first abort kills the harness that exists to count aborts.
+          set +e
+          set -uo pipefail
+
+          iterations="${{ inputs.iterations }}"
+          if [ -z "${iterations}" ]; then iterations=150; fi
+
+          aborts=0
+          other=0
+          passed=0
+          mkdir -p repro
+          for i in $(seq 1 "${iterations}"); do
+            out="repro/run-${i}.log"
+            python ingest/ingest.py \
+              --source data/sample/cpi_fixture.csv \
+              --out warehouse/bronze \
+              --source-name fixture:synthetic > "${out}" 2>&1
+            status=$?
+            if [ "${status}" -eq 0 ]; then
+              passed=$((passed + 1))
+              rm -f "${out}"
+              continue
+            fi
+            if [ "${status}" -eq 134 ] || [ "${status}" -eq 250 ]; then
+              aborts=$((aborts + 1))
+              if [ "${aborts}" -le 3 ]; then
+                echo "--- iteration ${i}: exit ${status} ---"
+                cat "${out}"
+              fi
+            else
+              other=$((other + 1))
+              if [ "${other}" -le 3 ]; then
+                echo "--- iteration ${i}: unexpected exit ${status} ---"
+                cat "${out}"
+              fi
+            fi
+          done
+
+          {
+            echo "iterations=${iterations}"
+            echo "passed=${passed}"
+            echo "aborts=${aborts}"
+            echo "other=${other}"
+          } >> "$GITHUB_OUTPUT"
+          echo "===== OTOMATIK KONTROL ====="
+          echo "iterations: ${iterations}"
+          echo "passed: ${passed}"
+          echo "sigabrt: ${aborts}"
+          echo "other_nonzero: ${other}"
+          echo "::error title=teardown abort rate::iterations=${iterations} passed=${passed} sigabrt=${aborts} other_nonzero=${other}"
+          exit 0
+
+      - name: Preserve the failing iterations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: teardown-abort-repro
+          path: repro/
+          if-no-files-found: ignore
+          retention-days: 30

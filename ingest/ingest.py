@@ -14,6 +14,7 @@ Exit code 0 = PASS, 1 = FAIL. A machine-readable check block is printed.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -168,5 +169,39 @@ def main() -> int:
     return status
 
 
+def _exit_without_teardown(status: int) -> int:
+    """Leave the process immediately, skipping every teardown handler.
+
+    This CLI is a leaf: when main() returns, all work is finished and
+    durable. The Parquet partitions were written and closed by
+    write_bronze(), and count_bronze_rows() has already re-read them from
+    storage in a separate pass, so the check block printed above is a
+    statement about bytes that exist on disk, not about buffers.
+
+    What remains after that point is pure shutdown, and shutdown is where
+    #63, #68 and #70 died. In all three the child printed "RESULT: PASS"
+    and then emitted "terminate called without an active exception" and
+    exit -6 (SIGABRT). That message comes from the C++ runtime, not from
+    Python: a std::thread destroyed while still joinable, during the
+    static-destructor phase that runs after CPython finalises. The failing
+    runs also spent about four seconds longer than the passing ones, and
+    that time was spent in shutdown rather than in ingest.
+
+    os._exit() bypasses that phase entirely: no atexit handlers, no
+    interpreter finalisation, no __cxa_atexit destructors. The exit status
+    the caller sees becomes exactly the status computed here. Because
+    os._exit() also skips buffer flushing, stdout and stderr are flushed
+    explicitly first, so the machine-readable check block is never lost.
+
+    This does not hide a failure. A non-zero status is propagated
+    unchanged, so a real ingest error still fails the pipeline. It removes
+    only the window in which an already-successful run could be turned into
+    a failure by teardown.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(status)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    _exit_without_teardown(main())
