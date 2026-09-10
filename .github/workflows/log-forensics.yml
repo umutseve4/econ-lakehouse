@@ -39,10 +39,11 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
-      # 33964738277: #63, pipeline / dashboard-smoke step 7, 2026-09-05
-      # 33982259880: #68, run-audit step 10, 2026-09-05
-      # 34027310847: #70, run-audit step 9 on main, 2026-09-06
-      DEFAULT_RUNS: "33964738277 33982259880 34027310847"
+      # 34516447687: PR #88, pipeline / ingest-and-transform step 11
+      #              "Fetch real CPI from EVDS", 2026-09-10. The same step is
+      #              green on main at 4207b6fb, so this is either a live EVDS
+      #              fault or something the PR introduced. The log decides.
+      DEFAULT_RUNS: "34516447687"
     steps:
       - name: Retrieve the failed steps
         shell: bash
