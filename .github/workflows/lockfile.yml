@@ -10,6 +10,11 @@ name: lockfile
 # same set of code rather than whatever was newest when it happened to run.
 # To change a dependency, edit `requirements.in` and let this workflow
 # rewrite the resolved set.
+#
+# The trigger below lists this file as well, so a resolution can be forced by
+# editing this comment. That is not decoration: the commit that removed the
+# earlier `requirements.lock` matched no trigger path and left the generated
+# file stale, which is exactly the failure mode this note prevents.
 
 on:
   push:
