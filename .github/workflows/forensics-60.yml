@@ -31,6 +31,8 @@ jobs:
       # 33961221722: the 10:38 dashboard-smoke failure on main @ 28dffa88
       RUNS: "33961541816 33961541818 33961221722"
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
       - name: Retrieve the failed steps
         shell: bash
         run: |
