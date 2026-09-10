@@ -33,6 +33,14 @@ jobs:
           python-version: "3.12"
       - name: Freshness policy boundary tests (offline)
         run: python tests/test_freshness.py
+      # The alert decision is JavaScript because it runs inside github-script.
+      # It is tested here rather than in its own workflow so that the gate and
+      # the alarm that reports on the gate cannot drift apart.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Failure-alert dedup decision tests (offline)
+        run: node tests/test_alert_dedup.js
 
   live-gate:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -81,36 +89,49 @@ jobs:
       contents: read
       issues: write
     steps:
+      # Needed so github-script can require the shared decision module. The
+      # decision itself must not be re-typed inline here; that duplication is
+      # exactly how the two alert jobs drifted into opposite bugs (#47).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
+            const { decideAlertAction } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/alert_dedup.js`);
+
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const title = 'Data freshness gate failed — TP.FG.J0';
             const marker = '<!-- freshness-gate:TP.FG.J0 -->';
-            const open = await github.paginate(github.rest.issues.listForRepo, {
+
+            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
               labels: 'data-freshness',
               per_page: 100,
             });
+
             // Dedupe on the stable marker so the issue can be retitled (for
             // example into an accepted-incident record) without spawning a
             // duplicate. The title match is a fallback for issues opened
-            // before the marker existed.
-            const existing = open.find(
-              (issue) => (issue.body || '').includes(marker) || issue.title === title
-            );
-            if (!existing) {
-              await github.rest.issues.create({
+            // before the marker existed. Both branches are proven offline in
+            // tests/test_alert_dedup.js.
+            const decision = decideAlertAction({ openIssues, marker, title });
+            core.info(`dedup decision: ${decision.action} (matched by ${decision.matchedBy || 'nothing'})`);
+
+            if (decision.action === 'create') {
+              const created = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 title,
                 labels: ['data-freshness'],
                 body: `${marker}\nThe production CPI source exceeded the 3-month freshness limit.\n\nRun: ${runUrl}\n\nDo not silently substitute another series; verify its identity and YoY compatibility first.`,
               });
+              core.notice(`opened incident #${created.data.number}`);
               return;
             }
+
             // Without this comment a recurring failure would be completely
             // silent: the issue is already open, so nothing is created and
             // nobody is notified. That is exactly the state the week an
@@ -118,6 +139,7 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: existing.number,
+              issue_number: decision.issueNumber,
               body: `${marker}\nThe freshness gate failed again on \`${context.eventName}\`.\n\nRun: ${runUrl}\n\nIf a time-boxed acknowledgement was covering this series, it has expired or no longer matches (the upstream month moved, or the series changed). Re-run the investigation before touching \`ingest/freshness_waiver.py\` — extending a waiver without new evidence is how a gate becomes decoration.`,
             });
+            core.notice(`commented on existing incident #${decision.issueNumber}`);
