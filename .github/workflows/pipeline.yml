@@ -46,11 +46,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # requirements.txt pins floors, not exact versions, so two clean
-      # installs of the same commit can resolve different HTTP stacks. When
-      # a live-fetch step fails, "was the resolved stack the same?" is the
-      # first question worth asking, and it is unanswerable after the fact
-      # unless the answer was recorded. Never gates CI.
+      # requirements.txt is fully pinned as of #83, so the resolved stack is
+      # meant to be identical across installs of the same commit. Recording it
+      # is what makes that claim falsifiable: if a live-fetch step ever fails,
+      # "was the resolved stack really the same?" is answerable from the log
+      # rather than from trust. Never gates CI.
       - name: Resolved HTTP stack inventory (diagnostic, never gates CI)
         continue-on-error: true
         run: |
@@ -486,38 +486,56 @@ jobs:
       contents: read
       issues: write
     steps:
+      # Needed so github-script can require the shared decision module.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
+            const { decideAlertAction } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/alert_dedup.js`);
+
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const title = 'Scheduled pipeline failed';
             const marker = '<!-- pipeline-failure -->';
-            const open = await github.paginate(github.rest.issues.listForRepo, {
+
+            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
               labels: 'pipeline-failure',
               per_page: 100,
             });
+
             // The title used to embed the failure date, so every weekly
             // failure opened a brand new issue: the documented deduplication
             // never actually happened. Dedupe on a stable marker instead and
             // record a recurrence as a comment on the open issue, so an
             // unresolved breakage reads as one incident rather than a pile.
-            const existing = open.find((issue) => (issue.body || '').includes(marker));
-            if (!existing) {
-              await github.rest.issues.create({
+            //
+            // No title fallback here on purpose. This stream never shipped a
+            // marker-less issue, and the old titles carried a date, so a
+            // title match could only ever be wrong. The decision is shared
+            // with freshness-gate and proven in tests/test_alert_dedup.js.
+            const decision = decideAlertAction({ openIssues, marker });
+            core.info(`dedup decision: ${decision.action} (matched by ${decision.matchedBy || 'nothing'})`);
+
+            if (decision.action === 'create') {
+              const created = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 title,
                 labels: ["pipeline-failure"],
                 body: `${marker}\nThe weekly scheduled pipeline run failed.\n\nFirst failing run: ${runUrl}\n\nLikely causes: EVDS API change/outage, dbt test failure, or dependency drift.\n\nClose this issue only after a scheduled run has succeeded again. While it stays open, further failures are added here as comments instead of opening new issues.`,
               });
+              core.notice(`opened incident #${created.data.number}`);
               return;
             }
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: existing.number,
+              issue_number: decision.issueNumber,
               body: `${marker}\nThe scheduled pipeline failed again.\n\nRun: ${runUrl}\n\nThis is a recurrence of an unresolved failure, not a new incident. If the cause has changed, say so here rather than opening a second issue.`,
             });
+            core.notice(`commented on existing incident #${decision.issueNumber}`);
