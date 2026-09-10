@@ -43,8 +43,8 @@ jobs:
     env:
       PYTHONFAULTHANDLER: "1"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@e348410e00f449ec0857ee500de1a4a1a9be9cc0 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
@@ -62,7 +62,6 @@ jobs:
           set -uo pipefail
           iterations="${{ inputs.iterations }}"
           if [ -z "${iterations}" ]; then iterations=150; fi
-          echo "iterations=${iterations}" >> "$GITHUB_OUTPUT"
 
           aborts=0
           other=0
@@ -91,6 +90,7 @@ jobs:
             fi
           done
 
+          echo "iterations=${iterations}" >> "$GITHUB_OUTPUT"
           echo "passed=${passed}" >> "$GITHUB_OUTPUT"
           echo "aborts=${aborts}" >> "$GITHUB_OUTPUT"
           echo "other=${other}" >> "$GITHUB_OUTPUT"
