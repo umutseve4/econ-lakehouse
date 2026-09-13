@@ -42,15 +42,9 @@ jobs:
 
       - name: Iskeleyi sil ve commit et
         run: |
-          git rm -q tools/onetime/patch_audit_002_onkayit.py
           git rm -q -r --ignore-unmatch tools/onetime
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "audit-002: on kayit kanitini tum ref'ler uzerinden dogrula
-
-Squash birlestirme, protokol ve veri commit'lerini ana dalda tek commit'te
-topluyor ve on kayit sirasini gorunmez kiliyor. Sira artik git log --all ile
-tum ref'ler uzerinden okunuyor. Kapi zayiflamadi: uc negatif kontrol testi,
-bozuk gecmisin gercekten yakalandigini yapay depolar uzerinde gosteriyor."
+          git commit -m "audit-002: on kayit kanitini tum ref'ler uzerinden dogrula"
           git push origin HEAD:${{ github.ref_name }}
