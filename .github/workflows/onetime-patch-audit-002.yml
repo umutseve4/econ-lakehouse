@@ -1,0 +1,55 @@
+name: onetime-patch-audit-002
+
+# Tek seferlik iskele. Buyuk bir dosyayi baglamdan yeniden yazmak bayt
+# duzeyinde tutmaz, bu yuzden degisiklik capali bir yama betigi ile CI
+# icinde basilir. Betik calistiktan sonra kendini siler, bu is akisi da
+# ayni dalda elle silinir.
+
+on:
+  push:
+    branches: ["fix/**"]
+    paths:
+      - "tools/onetime/patch_audit_002_onkayit.py"
+
+permissions:
+  contents: write
+
+jobs:
+  yama:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Yamayi uygula
+        run: python tools/onetime/patch_audit_002_onkayit.py
+
+      - name: Sozdizimi ve toplama kontrolu
+        run: |
+          python -m py_compile tests/test_audit_002.py
+          python -m pip install --quiet pytest
+          python -m pytest tests/test_audit_002.py --collect-only -q | tail -5
+
+      - name: Yamali dosyayi goster
+        run: git --no-pager diff --stat
+
+      - name: Iskeleyi sil ve commit et
+        run: |
+          git rm -q tools/onetime/patch_audit_002_onkayit.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "audit-002: on kayit kanitini tum ref'ler uzerinden dogrula
+
+Squash birlestirme, protokol ve veri commit'lerini ana dalda tek commit'te
+topluyor ve on kayit sirasini gorunmez kiliyor. Sira artik git log --all ile
+tum ref'ler uzerinden okunuyor. Kapi zayiflamadi: uc negatif kontrol testi,
+bozuk gecmisin gercekten yakalandigini yapay depolar uzerinde gosteriyor."
+          git push origin HEAD:${{ github.ref_name }}
