@@ -25,6 +25,98 @@
 
 ---
 
+## Audit 001: is the Turkish CPI gap an arithmetic error?
+
+For August 2026 the official institute (TUIK) published **31.51%** annual CPI
+inflation. The independent group (ENAG) published **49.03%** for the same month.
+A common claim on both sides is that the other one cannot even add up correctly.
+
+This repository now contains an audit that tests exactly that claim, applying one
+identical test to both institutions.
+
+| | internal arithmetic test | reproducibility scorecard |
+|---|---|---|
+| **TUIK** | PASS, 64 of 64 months clean | 8/8 |
+| **ENAG** | PASS, uses 17.9% of the rounding envelope | 2/8 |
+
+**Neither side has an arithmetic error.** The 17.5 point gap does not come from
+addition. It comes from the basket, the weights and the price collection method.
+The real asymmetry is not accuracy but auditability: a third party can rebuild the
+TUIK figure end to end and cannot rebuild the ENAG one.
+
+```bash
+python audits/001-tufe-aritmetigi/audit.py --check
+```
+
+No dependencies, standard library only. Every number in the report is recomputed
+from the raw CSV; if one drifts, the exit code is 1 and CI turns red.
+
+- **[Read the audit](audits/001-tufe-aritmetigi/README.md)** (in Turkish)
+- [Pre-registered protocol](audits/001-tufe-aritmetigi/PROTOCOL.md), committed in
+  its own earlier commit; the ordering is asserted from git history by a test
+- [Appendix A](audits/001-tufe-aritmetigi/EK-A-artik-tablosu.md), the full 64 row
+  residual table, regenerated and byte-compared by CI on every run
+- [Sources](audits/001-tufe-aritmetigi/data/SOURCES.md), one code per data cell
+
+The report also carries its own error log. The first published version named the
+wrong month for the largest residual. That version **failed CI** at commit
+`f55ca86`, the correction passed at `55a2beb`, and both states remain in history.
+The guard was proved by a real break, not by a claim.
+
+---
+
+## Audit 002: can the weights alone produce the gap?
+
+Audit 001 named the basket as the source of the gap but did not measure it.
+Audit 002 was the attempt to measure it, and it **stopped, because my own
+pre-registered hypothesis turned out to be wrong**.
+
+The pre-registered Layer A identity was that the published headline equals
+the weighted mean of the 13 main-group annual rates. It does not hold for
+August 2026:
+
+| quantity | value |
+|---|---:|
+| computed annual rate | 31.278154% |
+| published annual rate | 31.51% |
+| residual | -0.231846 points |
+| rounding envelope half-width | 0.015163 points |
+| residual / envelope half-width | **15.29x** |
+
+The published headline sits outside the envelope even when the envelope is
+built in the most generous way available, so rounding cannot explain it.
+
+**This is not a TUIK error.** TUIK's own 13 published annual contributions
+sum to exactly 31.51 with a residual of 0.000000, so the data is internally
+consistent and correctly transcribed. What broke is the aggregation model
+**I** wrote into the protocol: the annual headline is not a simple weighted
+mean of current-year weights.
+
+Pre-registered stopping rule 1 fired, so Layer B and Layer C were never
+computed and never published. That constraint is enforced by code rather
+than asserted in prose: the functions `katman_b` and `katman_c` do not exist
+in `audit.py`, and both a test and a CI `grep` step turn red if they
+reappear. The pre-registered question was left unanswered and **was not
+rewritten** after the result was seen.
+
+```bash
+python audits/002-agirlik-siniri/audit.py --json --check
+```
+
+- **[Read the audit](audits/002-agirlik-siniri/README.md)** (in Turkish)
+- [Pre-registered protocol](audits/002-agirlik-siniri/PROTOCOL.md), commit
+  `4b1e27f`, committed alone before any data was fetched
+- [Sources](audits/002-agirlik-siniri/data/SOURCES.md), one code per data
+  cell, with the full-table dependence on a secondary source stated as a
+  limitation
+
+The report-versus-data guard was again proved by a real break rather than a
+claim: a deliberately wrong number was published to the report, CI failed at
+commit `2f01c40` on exactly that step with the following steps skipped, and
+the correction passed at `bffd2f5`.
+
+---
+
 ## Run the whole thing in four commands
 
 ```bash

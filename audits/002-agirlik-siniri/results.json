@@ -1,0 +1,118 @@
+{
+  "denetim": "002-agirlik-siniri",
+  "donem": "2026-08",
+  "durdurma_kurali_1": {
+    "aciklama": "Katman A zarfin disina cikti. Protokol geregi Katman B (ulasilabilir aralik) ve Katman C (tek grup tasima yuku) hesaplanmadi ve yayimlanmadi.",
+    "atesledi": true,
+    "yayimlanmayan": [
+      "katman_b",
+      "katman_c"
+    ]
+  },
+  "durdurma_kurali_2": {
+    "agirlik_toplami": 99.97,
+    "atesledi": false,
+    "sapma": -0.030000000000001137,
+    "yuvarlama_payi": 0.065
+  },
+  "grup_sayisi": 13,
+  "katman_a": {
+    "artik": -0.23184555366609771,
+    "artik_zarf_kati": 15.289942013618102,
+    "hesaplanan": 31.278154446333904,
+    "sinira_uzaklik": 0.2166815066780039,
+    "sonuc": "KIRILDI",
+    "yayimlanan": 31.51,
+    "zarf_alt": 31.26299194879232,
+    "zarf_icinde": false,
+    "zarf_ust": 31.293318493321998,
+    "zarf_yari_genislik": 0.015163272264839378
+  },
+  "tani_notu_protokol_disi": {
+    "en_buyuk_negatif_sapma": -2.5808510638297886,
+    "en_buyuk_negatif_sapma_grup": "Giyim ve ayakkabi",
+    "etkin_agirlik_toplami": 98.75755552934037,
+    "etkin_agirliklar": [
+      {
+        "agirlik": 24.44,
+        "etkin_agirlik": 24.030778336786028,
+        "grup": "Gida ve alkolsuz icecekler",
+        "sapma": -0.40922166321397313
+      },
+      {
+        "agirlik": 2.75,
+        "etkin_agirlik": 2.9585798816568047,
+        "grup": "Alkollu icecekler ve tutun",
+        "sapma": 0.20857988165680474
+      },
+      {
+        "agirlik": 7.9,
+        "etkin_agirlik": 5.319148936170212,
+        "grup": "Giyim ve ayakkabi",
+        "sapma": -2.5808510638297886
+      },
+      {
+        "agirlik": 11.4,
+        "etkin_agirlik": 12.59743525270304,
+        "grup": "Konut, su, elektrik, gaz ve diger yakitlar",
+        "sapma": 1.1974352527030394
+      },
+      {
+        "agirlik": 7.92,
+        "etkin_agirlik": 7.93044953350297,
+        "grup": "Mobilya ve ev esyalari",
+        "sapma": 0.010449533502970176
+      },
+      {
+        "agirlik": 2.79,
+        "etkin_agirlik": 3.014265991716521,
+        "grup": "Saglik",
+        "sapma": 0.22426599171652084
+      },
+      {
+        "agirlik": 16.62,
+        "etkin_agirlik": 16.932725199543903,
+        "grup": "Ulastirma",
+        "sapma": 0.31272519954390177
+      },
+      {
+        "agirlik": 3.1,
+        "etkin_agirlik": 3.4684333593141075,
+        "grup": "Bilgi ve iletisim",
+        "sapma": 0.36843335931410737
+      },
+      {
+        "agirlik": 4.34,
+        "etkin_agirlik": 4.054630815194195,
+        "grup": "Eglence, dinlence, spor ve kultur",
+        "sapma": -0.28536918480580464
+      },
+      {
+        "agirlik": 2.02,
+        "etkin_agirlik": 2.1332335329341316,
+        "grup": "Egitim hizmetleri",
+        "sapma": 0.11323353293413163
+      },
+      {
+        "agirlik": 11.13,
+        "etkin_agirlik": 10.686777920410783,
+        "grup": "Lokantalar ve konaklama hizmetleri",
+        "sapma": -0.44322207958921744
+      },
+      {
+        "agirlik": 1.07,
+        "etkin_agirlik": 1.27591706539075,
+        "grup": "Sigorta ve finansal hizmetler",
+        "sapma": 0.20591706539074983
+      },
+      {
+        "agirlik": 4.49,
+        "etkin_agirlik": 4.355179704016914,
+        "grup": "Kisisel bakim, sosyal koruma ve cesitli mal ve hizmetler",
+        "sapma": -0.13482029598308642
+      }
+    ],
+    "katki_artigi": -3.552713678800501e-15,
+    "katki_toplami": 31.509999999999998
+  }
+}
