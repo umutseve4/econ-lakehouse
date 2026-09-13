@@ -58,6 +58,19 @@ jobs:
             | grep -Ei '^(fastapi|starlette|anyio|httpx|httpcore|requests|urllib3|uvicorn) ' \
             | tee /tmp/deps.txt
 
+      # The HTTP inventory above cannot explain a native abort: the libraries
+      # that abort are the ones with a C++ layer. step-with-forensics.sh
+      # already tries to dump artifacts/datastack.txt when a step dies, but
+      # until now nothing in this workflow wrote that file, so a captured
+      # SIGABRT still could not be pinned to a version (#72).
+      - name: Resolved data stack inventory (diagnostic, never gates CI)
+        continue-on-error: true
+        run: |
+          mkdir -p artifacts
+          python -m pip list 2>&1 \
+            | grep -Ei '^(pyarrow|duckdb|pandas|numpy|dbt-core|dbt-duckdb|dagster|streamlit) ' \
+            | tee artifacts/datastack.txt
+
       - name: Unit tests (bronze contract)
         run: python tests/test_ingest.py
 
@@ -110,8 +123,14 @@ jobs:
         run: |
           python ingest/evds_freshness.py 2>&1 | tee /tmp/freshness.txt
 
+      # This is the step that aborted with exit 134 on an identical tree in
+      # #72. The teardown cause was found and fixed in #84, and a mutation
+      # guard now proves the fix is load-bearing, so the wrapper here is a
+      # net rather than a live investigation: if a native abort ever returns,
+      # its message reaches an annotation instead of dying in a raw log that
+      # only a signed-in browser can read.
       - name: Ingest -> bronze (Parquet)
-        run: python ingest/ingest.py --source "$SOURCE_CSV" --out warehouse/bronze --source-name "$SOURCE_NAME"
+        run: bash .github/scripts/step-with-forensics.sh ingest-bronze python ingest/ingest.py --source "$SOURCE_CSV" --out warehouse/bronze --source-name "$SOURCE_NAME"
 
       - name: Idempotency proof (re-ingest must not change row count)
         run: |
@@ -183,6 +202,8 @@ jobs:
             /tmp/freshness.txt
             /tmp/goldlag.txt
             /tmp/deps.txt
+            artifacts/datastack.txt
+            artifacts/*.log
           if-no-files-found: warn
           retention-days: 14
 
@@ -323,22 +344,11 @@ jobs:
       - name: Bootstrap unit tests (subprocess stubbed)
         run: python tests/test_bootstrap.py
 
+      # This is the step that failed opaquely in #63. Its body used to be a
+      # YAML heredoc, which the forensics wrapper cannot execute, so it moved
+      # to tests/bootstrap_e2e.py. Same assertions, now wrappable.
       - name: Cold-start bootstrap e2e (fixture mode, real pipeline)
-        run: |
-          python - <<'EOF'
-          import json, sys
-          from pathlib import Path
-          from dashboard.bootstrap import ensure_warehouse
-          m = ensure_warehouse()
-          prov = json.loads(Path("warehouse/provenance.json").read_text())
-          print("===== OTOMATIK KONTROL =====")
-          print("bootstrap_mode:", m)
-          print("provenance_mode:", prov.get("mode"))
-          print("provenance_source:", prov.get("source_name"))
-          ok = m == "built-fixture" and prov.get("mode") == "fixture"
-          print("RESULT:", "PASS" if ok else "FAIL")
-          sys.exit(0 if ok else 1)
-          EOF
+        run: bash .github/scripts/step-with-forensics.sh dashboard-bootstrap-e2e python tests/bootstrap_e2e.py
 
   dagster-orchestration:
     # Materializes the full asset graph (bronze -> marts + checks) in-process
@@ -452,6 +462,11 @@ jobs:
           docker image inspect econ-lakehouse --format 'image_size_mb: {{.Size}}' \
             | awk -F': ' '{printf "image_size_mb: %.0f\n", $2/1024/1024}'
 
+      # Deliberately not wrapped in step-with-forensics.sh. This step is a
+      # pipeline with PIPESTATUS and a tee, which the wrapper cannot run
+      # (it executes its argv directly), and it already publishes its own
+      # forensics: the container log is captured and its tail printed on a
+      # non-zero exit. Wrapping it would cost evidence rather than add it.
       - name: Run container end-to-end (live if secret set, else fixture)
         env:
           EVDS_API_KEY: ${{ secrets.EVDS_API_KEY }}
