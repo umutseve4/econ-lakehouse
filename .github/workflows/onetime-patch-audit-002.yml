@@ -9,7 +9,7 @@ on:
   push:
     branches: ["fix/**"]
     paths:
-      - "tools/onetime/patch_audit_002_onkayit.py"
+      - "tools/onetime/**"
 
 permissions:
   contents: write
@@ -43,6 +43,7 @@ jobs:
       - name: Iskeleyi sil ve commit et
         run: |
           git rm -q tools/onetime/patch_audit_002_onkayit.py
+          git rm -q -r --ignore-unmatch tools/onetime
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
