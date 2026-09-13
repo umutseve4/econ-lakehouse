@@ -280,53 +280,176 @@ def test_rapor_ile_sonuc_ayni_sayilari_soyluyor(sonuc):
 # --------------------------------------------------------------------------
 
 
-def _git(*args):
+PROTOKOL_YOLU = "audits/002-agirlik-siniri/PROTOCOL.md"
+SONRAKI_YOLLAR = (
+    "audits/002-agirlik-siniri/data/tuik-2026-08-ana-gruplar.csv",
+    "audits/002-agirlik-siniri/audit.py",
+    "audits/002-agirlik-siniri/README.md",
+)
+
+
+def _git(*args, depo=None):
+    """git komutunu calistirir. git kurulu degilse bos doner."""
     try:
         return subprocess.run(
-            ["git"] + list(args), cwd=KOK, capture_output=True, text=True
+            ["git"] + list(args), cwd=depo or KOK, capture_output=True, text=True
         ).stdout.strip()
     except FileNotFoundError:
         return ""
 
 
-def test_protokol_veriden_once_commit_edilmis():
-    """PROTOCOL.md, veri ve sonuc dosyalarindan once commit edilmis olmali."""
-    if not _git("rev-parse", "--is-inside-work-tree"):
-        pytest.skip("git deposu yok")
+def _git_deposu_mu(depo=None):
+    return bool(_git("rev-parse", "--is-inside-work-tree", depo=depo))
 
-    def ilk_commit(yol):
-        c = _git("log", "--reverse", "--format=%H", "--", yol)
-        return c.splitlines()[0] if c else None
 
-    p = ilk_commit("audits/002-agirlik-siniri/PROTOCOL.md")
-    assert p, "PROTOCOL.md git gecmisinde bulunamadi (fetch-depth: 0 gerekli)"
+def _ilk_commit(yol, depo=None):
+    """Yolu ilk kez ekleyen commit'i TUM ref'ler icinde arar.
 
-    for yol in (
-        "audits/002-agirlik-siniri/data/tuik-2026-08-ana-gruplar.csv",
-        "audits/002-agirlik-siniri/audit.py",
-        "audits/002-agirlik-siniri/README.md",
-    ):
-        c = ilk_commit(yol)
-        assert c, "git gecmisinde bulunamadi: " + yol
-        assert c != p, "%s protokolle AYNI commit'te; ön kayit sirasi kanitlanamaz" % yol
-        sira = _git("rev-list", "--count", "%s..%s" % (p, c))
-        assert sira and int(sira) > 0, (
-            "%s protokolden once veya ondan bagimsiz commit edilmis" % yol
-        )
+    Tek dalla yetinilmez. Bir PR squash ile birlestirildiginde protokol, veri
+    ve rapor ana dalda tek commit'te gorunur; sira oradan okunamaz. Kanit,
+    kaynak dalin commit'lerinde durur. Bu yuzden arama git log --all ile
+    yapilir ve is akisi tam gecmisi (fetch-depth: 0) ceker.
+    """
+    c = _git("log", "--all", "--reverse", "--format=%H", "--", yol, depo=depo)
+    return c.splitlines()[0] if c else None
+
+
+def _committeki_dosyalar(commit, depo=None):
+    ham = _git("show", "--name-only", "--format=", commit, depo=depo)
+    return [d for d in ham.splitlines() if d.strip()]
+
+
+def _tek_basina_ihlali(depo=None):
+    """Protokol commit'i yalnizca PROTOCOL.md icermeli. Ihlal varsa metin doner."""
+    p = _ilk_commit(PROTOKOL_YOLU, depo=depo)
+    if not p:
+        return "%s hicbir ref'te bulunamadi (tam gecmis gerekli)" % PROTOKOL_YOLU
+    dosyalar = _committeki_dosyalar(p, depo=depo)
+    if dosyalar != [PROTOKOL_YOLU]:
+        return "protokol commit'i %s tek basina degil: %s" % (p[:8], dosyalar)
+    return None
+
+
+def _sira_ihlalleri(depo=None):
+    """Veri ve rapor, protokol commit'inin soyundan gelmeli."""
+    p = _ilk_commit(PROTOKOL_YOLU, depo=depo)
+    if not p:
+        return ["%s hicbir ref'te bulunamadi (tam gecmis gerekli)" % PROTOKOL_YOLU]
+    ihlaller = []
+    for yol in SONRAKI_YOLLAR:
+        c = _ilk_commit(yol, depo=depo)
+        if not c:
+            ihlaller.append("git gecmisinde bulunamadi: " + yol)
+            continue
+        if c == p:
+            ihlaller.append(
+                "%s protokolle AYNI commit'te, on kayit sirasi kanitlanamaz" % yol
+            )
+            continue
+        sayi = _git("rev-list", "--count", "%s..%s" % (p, c), depo=depo)
+        try:
+            ileride = int(sayi) > 0
+        except ValueError:
+            ileride = False
+        if not ileride:
+            ihlaller.append(
+                "%s protokolden once ya da ondan bagimsiz commit edilmis" % yol
+            )
+    return ihlaller
 
 
 def test_protokol_tek_basina_commit_edilmis():
-    if not _git("rev-parse", "--is-inside-work-tree"):
+    if not _git_deposu_mu():
         pytest.skip("git deposu yok")
-    c = _git("log", "--reverse", "--format=%H", "--", "audits/002-agirlik-siniri/PROTOCOL.md")
-    if not c:
-        pytest.skip("gecmis yok")
-    ilk = c.splitlines()[0]
-    dosyalar = [
-        d
-        for d in _git("show", "--name-only", "--format=", ilk).splitlines()
-        if d.strip()
-    ]
-    assert dosyalar == ["audits/002-agirlik-siniri/PROTOCOL.md"], (
-        "protokol commit'i tek basina degil: %s" % dosyalar
+    ihlal = _tek_basina_ihlali()
+    assert ihlal is None, ihlal
+
+
+def test_protokol_veriden_once_commit_edilmis():
+    """PROTOCOL.md, veri ve sonuc dosyalarindan once commit edilmis olmali."""
+    if not _git_deposu_mu():
+        pytest.skip("git deposu yok")
+    ihlaller = _sira_ihlalleri()
+    assert not ihlaller, (
+        "on kayit sirasi kanitlanamadi: %s. Kanit, denetim-002-sepet dalinin "
+        "commit'lerindedir; o dal silinirse bu kanit yok olur." % ihlaller
     )
+
+
+# --------------------------------------------------------------------------
+# Negatif kontrol: yukaridaki iki test gercekten kirilabiliyor mu
+#
+# Kapinin varligi iddia degil kanit olmali. Asagidaki testler yapay depolar
+# kurar ve bozuk gecmisin yakalandigini, dogru gecmisin gectigini gosterir.
+# --------------------------------------------------------------------------
+
+
+def _yapay_depo(kok, senaryo):
+    def g(*a):
+        subprocess.run(["git"] + list(a), cwd=kok, check=True, capture_output=True)
+
+    g("init", "-q", "-b", "main")
+    g("config", "user.email", "denetim@ornek.gecersiz")
+    g("config", "user.name", "denetim")
+    g("config", "commit.gpgsign", "false")
+
+    yollar = [os.path.join(kok, PROTOKOL_YOLU)] + [
+        os.path.join(kok, y) for y in SONRAKI_YOLLAR
+    ]
+    for y in yollar:
+        os.makedirs(os.path.dirname(y), exist_ok=True)
+
+    def yaz(yol, metin):
+        with open(yol, "w", encoding="utf-8") as f:
+            f.write(metin)
+
+    protokol = yollar[0]
+    sonrakiler = yollar[1:]
+
+    if senaryo == "dogru":
+        yaz(protokol, "on kayit\n")
+        g("add", "-A")
+        g("commit", "-qm", "on kayit")
+        for y in sonrakiler:
+            yaz(y, "veri\n")
+        g("add", "-A")
+        g("commit", "-qm", "veri ve sonuc")
+    elif senaryo == "squash":
+        yaz(protokol, "on kayit\n")
+        for y in sonrakiler:
+            yaz(y, "veri\n")
+        g("add", "-A")
+        g("commit", "-qm", "hepsi tek commit")
+    elif senaryo == "ters":
+        for y in sonrakiler:
+            yaz(y, "veri\n")
+        g("add", "-A")
+        g("commit", "-qm", "once veri")
+        yaz(protokol, "on kayit\n")
+        g("add", "-A")
+        g("commit", "-qm", "sonra protokol")
+    else:
+        raise ValueError(senaryo)
+    return kok
+
+
+@pytest.mark.parametrize("senaryo", ["squash", "ters"])
+def test_kontrol_bozuk_gecmisi_yakalar(senaryo):
+    if not _git_deposu_mu():
+        pytest.skip("git yok")
+    with tempfile.TemporaryDirectory() as gecici:
+        _yapay_depo(gecici, senaryo)
+        bulgular = list(_sira_ihlalleri(depo=gecici))
+        tek = _tek_basina_ihlali(depo=gecici)
+        if tek:
+            bulgular.append(tek)
+        assert bulgular, "bozuk gecmis yakalanmadi: %s" % senaryo
+
+
+def test_kontrol_dogru_gecmisi_gecirir():
+    if not _git_deposu_mu():
+        pytest.skip("git yok")
+    with tempfile.TemporaryDirectory() as gecici:
+        _yapay_depo(gecici, "dogru")
+        assert _sira_ihlalleri(depo=gecici) == []
+        assert _tek_basina_ihlali(depo=gecici) is None
