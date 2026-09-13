@@ -1,0 +1,58 @@
+name: on-kayit-butunlugu
+
+# Denetim raporlarinin omurgasi su cumledir: "protokol, sonuclar
+# gorulmeden once sabitlendi". Bu is akisi o cumleyi git gecmisinden
+# dogrular. Iddiayi tasiyan sey rapor metni degil, commit sirasidir.
+#
+# Path filtresi YOK. On-kayit kanitini bozan olaylarin cogu (squash
+# merge, kanit dalinin silinmesi, gecmis sikistirma) audits/ klasorune
+# hic dokunmadan gerceklesir. Kapi her zaman acik olmali.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: onkayit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  on-kayit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # sira testi tam gecmis ister, shallow clone kirar
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Gecmisin gercekten tam geldigini dogrula
+        run: |
+          if [ -f "$(git rev-parse --git-dir)/shallow" ]; then
+            echo "HATA: depo shallow geldi, on-kayit sirasi dogrulanamaz"
+            exit 1
+          fi
+          echo "Tam gecmis mevcut. Toplam commit: $(git rev-list --all --count)"
+
+      - name: pytest
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest tests/test_onkayit_001.py -v
+
+      - name: On-kayit sirasini goster
+        if: always()
+        run: |
+          echo "Denetim 001, tum ref'ler uzerinden ilk commit sirasi:"
+          git log --all --reverse --format='%h %ad %s' --date=iso \
+            -- audits/001-tufe-aritmetigi/ | head -20
+          echo
+          echo "Denetim 002, tum ref'ler uzerinden ilk commit sirasi:"
+          git log --all --reverse --format='%h %ad %s' --date=iso \
+            -- audits/002-sepet-agirliklari/ | head -20
