@@ -29,11 +29,11 @@ jobs:
   denetim:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # on-kayit sira testi tam gecmis ister
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -115,10 +115,10 @@ jobs:
         if: always()
         run: |
           echo "PROTOCOL.md ve sonuc dosyalarinin ilk commit sirasi:"
-          git log --reverse --format='%h %ad %s' --date=iso \
+          git log --all --reverse --format='%h %ad %s' --date=iso \
             -- audits/002-agirlik-siniri/ | head -20
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: audit-002-results
