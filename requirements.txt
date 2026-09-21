@@ -3,7 +3,6 @@
 # python: 3.12.14
 # resolved-at-utc: 2026-09-10T17:48:58Z
 # source-commit: 03cd0edf583c98817d1ce6e8dd2a5e90225943f6
-
 agate==1.9.1
     # via
     #   dbt-adapters
@@ -64,11 +63,11 @@ coloredlogs==14.0
     # via dagster
 daff==1.4.2
     # via dbt-core
-dagster==1.13.21
+dagster==1.13.23
     # via -r requirements.in
-dagster-pipes==1.13.21
+dagster-pipes==1.13.23
     # via dagster
-dagster-shared==1.13.21
+dagster-shared==1.13.23
     # via dagster
 dbt-adapters==1.24.5
     # via
@@ -177,7 +176,7 @@ markupsafe==3.0.3
     # via
     #   jinja2
     #   mako
-mashumaro==3.17
+mashumaro[msgpack]==3.17
     # via
     #   dbt-adapters
     #   dbt-common
@@ -350,8 +349,6 @@ tqdm==4.70.0
     # via dagster
 typing-extensions==4.16.0
     # via
-    #   aiohttp
-    #   aiosignal
     #   alembic
     #   altair
     #   anyio
@@ -366,10 +363,8 @@ typing-extensions==4.16.0
     #   opentelemetry-api
     #   pydantic
     #   pydantic-core
-    #   referencing
     #   snowplow-tracker
     #   sqlalchemy
-    #   starlette
     #   streamlit
     #   typing-inspection
 typing-inspection==0.4.4
