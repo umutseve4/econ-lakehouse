@@ -8,7 +8,7 @@
 # Monday. Each line below therefore states both the oldest release known to
 # work and the first release not covered by that knowledge.
 
-pandas>=3.0.5,<4
+pandas>=3.0.6,<4
 pyarrow>=25.0.1,<26
 duckdb>=1.5.5,<2
 dbt-duckdb>=1.11.0,<2
