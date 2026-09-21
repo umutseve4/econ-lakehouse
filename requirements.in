@@ -23,5 +23,5 @@ fastapi>=0.141.1,<0.142
 uvicorn>=0.52.4,<0.53
 httpx>=0.28.1,<0.29
 
-dagster>=1.13.21,<2
+dagster>=1.13.23,<2
 streamlit>=1.63.0,<2
