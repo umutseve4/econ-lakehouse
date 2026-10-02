@@ -24,4 +24,4 @@ uvicorn>=0.52.4,<0.53
 httpx>=0.28.1,<0.29
 
 dagster>=1.13.21,<2
-streamlit>=1.63.0,<2
+streamlit>=1.64.0,<2

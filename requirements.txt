@@ -327,7 +327,7 @@ starlette==1.6.0
     # via
     #   fastapi
     #   streamlit
-streamlit==1.63.0
+streamlit==1.64.0
     # via -r requirements.in
 structlog==26.1.0
     # via dagster
