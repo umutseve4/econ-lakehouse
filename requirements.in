@@ -20,7 +20,7 @@ s3fs>=2026.7.0,<2027
 
 # Pre-1.0 projects break on minor bumps, so the bound is the next minor.
 fastapi>=0.141.1,<0.142
-uvicorn>=0.52.4,<0.53
+uvicorn>=0.53.0,<0.54
 httpx>=0.28.1,<0.29
 
 dagster>=1.13.21,<2
