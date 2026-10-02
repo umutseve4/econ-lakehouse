@@ -16,7 +16,7 @@ dbt-duckdb>=1.11.0,<2
 # fsspec and s3fs use calendar versioning and are released in lockstep; the
 # bound is the next calendar year rather than the next major.
 fsspec>=2026.7.0,<2027
-s3fs>=2026.7.0,<2027
+s3fs>=2026.9.0,<2027
 
 # Pre-1.0 projects break on minor bumps, so the bound is the next minor.
 fastapi>=0.141.1,<0.142
