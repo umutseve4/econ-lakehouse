@@ -95,7 +95,7 @@ deepdiff==8.6.2
     # via dbt-common
 docstring-parser==0.18.0
     # via dagster
-duckdb==1.5.5
+duckdb==1.5.6
     # via
     #   -r requirements.in
     #   dbt-duckdb
