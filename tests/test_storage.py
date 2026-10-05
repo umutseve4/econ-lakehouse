@@ -119,6 +119,34 @@ def test_s3_endpoint_env_is_wired():
         del os.environ["LAKE_S3_ENDPOINT"]
 
 
+def test_local_write_is_atomic_on_failure():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Storage.from_uri(tmp)
+        path = store.join("cpi", "year=2024", "data.parquet")
+        store.write_parquet(good_df(), path)
+        before = Path(path).read_bytes()
+
+        real = pd.DataFrame.to_parquet
+
+        def boom(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            raise RuntimeError("forced parquet failure")
+
+        pd.DataFrame.to_parquet = boom
+        try:
+            try:
+                store.write_parquet(good_df(), path)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("expected forced parquet failure")
+        finally:
+            pd.DataFrame.to_parquet = real
+
+        assert Path(path).read_bytes() == before, "target must remain unchanged on failure"
+        leftovers = list(Path(tmp).glob("cpi/year=2024/*.tmp"))
+        assert not leftovers, f"temporary files were not cleaned up: {leftovers}"
+
+
 if __name__ == "__main__":
     tests = [(k, v) for k, v in list(globals().items()) if k.startswith("test_")]
     failed = 0

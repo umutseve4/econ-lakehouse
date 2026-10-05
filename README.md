@@ -164,7 +164,7 @@ Each orchestrated run
 
 | Layer | Main tools | Enforced checks |
 |---|---|---|
-| Bronze | pandas, pyarrow, fsspec | schema, ISO dates, positive values, no duplicate `(date, item_code)`, provenance, idempotent upsert |
+| Bronze | pandas, pyarrow, fsspec | schema + canonical Parquet column order, ISO dates, positive values, no duplicate `(date, item_code)`, provenance (`source_name`, `fetched_at`, `source_unit`, `source_frequency`), idempotent upsert, atomic local replace with rollback-on-failure |
 | Silver | dbt, DuckDB | typing, `not_null`, uniqueness, positivity, latest-fetch deduplication |
 | Gold | dbt table | non-null YoY metric, non-empty mart, revision history |
 | Serving | FastAPI, Streamlit | read-only DB, parameterized SQL, response limits, provenance and freshness disclosure |

@@ -34,6 +34,18 @@ REQUIRED_COLUMNS = {
 }
 
 PROVENANCE_COLUMNS = ["source_name", "fetched_at"]
+SOURCE_UNIT_DEFAULT = "index:2003=100"
+SOURCE_FREQUENCY_DEFAULT = "monthly"
+BRONZE_COLUMNS = [
+    "date",
+    "item_code",
+    "item_name",
+    "index_value",
+    "source_name",
+    "fetched_at",
+    "source_unit",
+    "source_frequency",
+]
 
 # Upsert key: one observation per (date, item_code).
 UPSERT_KEY = ["date", "item_code"]
@@ -68,7 +80,11 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_provenance(
-    df: pd.DataFrame, source_name: str, fetched_at: str | None = None
+    df: pd.DataFrame,
+    source_name: str,
+    fetched_at: str | None = None,
+    source_unit: str = SOURCE_UNIT_DEFAULT,
+    source_frequency: str = SOURCE_FREQUENCY_DEFAULT,
 ) -> pd.DataFrame:
     """Stamp every row with where it came from and when it was fetched.
 
@@ -77,12 +93,56 @@ def add_provenance(
     """
     if not source_name:
         raise ValidationError("source_name must be non-empty")
+    if not source_unit:
+        raise ValidationError("source_unit must be non-empty")
+    if not source_frequency:
+        raise ValidationError("source_frequency must be non-empty")
     df = df.copy()
     df["source_name"] = source_name
     df["fetched_at"] = fetched_at or datetime.now(timezone.utc).isoformat(
         timespec="seconds"
     )
+    df["source_unit"] = source_unit
+    df["source_frequency"] = source_frequency
     return df
+
+
+def normalize_bronze_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Canonicalize bronze schema before merge/write.
+
+    Historical files may predate source_unit/source_frequency; these are
+    backfilled with stable defaults to preserve existing history.
+    """
+    required = set(REQUIRED_COLUMNS) | set(PROVENANCE_COLUMNS)
+    missing = required - set(df.columns)
+    if missing:
+        raise ValidationError(f"missing columns: {sorted(missing)}")
+
+    out = df.copy()
+    if "source_unit" not in out.columns:
+        out["source_unit"] = SOURCE_UNIT_DEFAULT
+    if "source_frequency" not in out.columns:
+        out["source_frequency"] = SOURCE_FREQUENCY_DEFAULT
+
+    out["date"] = pd.to_datetime(out["date"], errors="coerce", format="ISO8601")
+    out["index_value"] = pd.to_numeric(out["index_value"], errors="coerce")
+    if out["date"].isna().any():
+        raise ValidationError("unparseable dates found")
+    if out["index_value"].isna().any():
+        raise ValidationError("non-numeric index_value found")
+
+    for col in ("item_code", "item_name", "source_name", "fetched_at"):
+        out[col] = out[col].astype(str)
+    out["source_unit"] = out["source_unit"].fillna(SOURCE_UNIT_DEFAULT).astype(str)
+    out["source_frequency"] = (
+        out["source_frequency"].fillna(SOURCE_FREQUENCY_DEFAULT).astype(str)
+    )
+    if (out["source_unit"].str.strip() == "").any():
+        raise ValidationError("source_unit must be non-empty")
+    if (out["source_frequency"].str.strip() == "").any():
+        raise ValidationError("source_frequency must be non-empty")
+    out["source_frequency"] = out["source_frequency"].str.lower()
+    return out[BRONZE_COLUMNS]
 
 
 def write_bronze(df: pd.DataFrame, out_dir: Path | str) -> list[Path | str]:
@@ -100,6 +160,7 @@ def write_bronze(df: pd.DataFrame, out_dir: Path | str) -> list[Path | str]:
             raise ValidationError(
                 f"provenance column '{col}' missing — call add_provenance() first"
             )
+    df = normalize_bronze_schema(df)
 
     store = Storage.from_uri(out_dir)
     written: list[Path | str] = []
@@ -107,14 +168,15 @@ def write_bronze(df: pd.DataFrame, out_dir: Path | str) -> list[Path | str]:
         path = store.join("cpi", f"year={year}", "data.parquet")
 
         if store.exists(path):
-            existing = store.read_parquet(path)
-            existing["date"] = pd.to_datetime(existing["date"])
+            existing = normalize_bronze_schema(store.read_parquet(path))
             merged = pd.concat([existing, part], ignore_index=True)
             merged = merged.drop_duplicates(subset=UPSERT_KEY, keep="last")
         else:
             merged = part
 
-        merged = merged.sort_values(UPSERT_KEY).reset_index(drop=True)
+        merged = normalize_bronze_schema(
+            merged.sort_values(UPSERT_KEY).reset_index(drop=True)
+        )
         store.write_parquet(merged, path)
         written.append(Path(path) if store.is_local else path)
     return written
