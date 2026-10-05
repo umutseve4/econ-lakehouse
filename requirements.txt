@@ -99,7 +99,7 @@ duckdb==1.5.5
     # via
     #   -r requirements.in
     #   dbt-duckdb
-fastapi==0.141.1
+fastapi==0.142.2
     # via -r requirements.in
 filelock==3.32.6
     # via dagster
@@ -207,6 +207,7 @@ opentelemetry-api==1.44.0
     # via
     #   dbt-common
     #   dbt-core
+    #   fastapi
 orderly-set==5.5.0
     # via deepdiff
 packaging==26.3
