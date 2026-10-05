@@ -66,5 +66,21 @@ class Storage:
             self.fs.makedirs(parent, exist_ok=True)
         except Exception:  # noqa: BLE001 — object stores have no real dirs
             pass
-        with self.fs.open(path, "wb") as f:
-            df.to_parquet(f, index=False)
+        if not self.is_local:
+            with self.fs.open(path, "wb") as f:
+                df.to_parquet(f, index=False)
+            return
+
+        target = Path(path)
+        parent_path = target.parent
+        parent_path.mkdir(parents=True, exist_ok=True)
+        tmp_path = parent_path / f".{target.name}.{os.getpid()}.tmp"
+        try:
+            with tmp_path.open("wb") as f:
+                df.to_parquet(f, index=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, target)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()

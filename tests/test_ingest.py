@@ -12,6 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd
 
 from ingest.ingest import (
+    BRONZE_COLUMNS,
+    SOURCE_FREQUENCY_DEFAULT,
+    SOURCE_UNIT_DEFAULT,
     ValidationError,
     add_provenance,
     count_bronze_rows,
@@ -112,6 +115,8 @@ def test_provenance_columns_present():
     df = prepared(source="evds:TP.FG.J0", fetched_at="2026-08-21T10:00:00+00:00")
     assert (df["source_name"] == "evds:TP.FG.J0").all()
     assert (df["fetched_at"] == "2026-08-21T10:00:00+00:00").all()
+    assert (df["source_unit"] == SOURCE_UNIT_DEFAULT).all()
+    assert (df["source_frequency"] == SOURCE_FREQUENCY_DEFAULT).all()
 
 
 def test_provenance_default_timestamp_is_utc_iso():
@@ -170,6 +175,33 @@ def test_append_new_month_grows_partition():
         )
         write_bronze(prepared(extra), Path(tmp))
         assert count_bronze_rows(Path(tmp)) == 3
+
+
+def test_existing_legacy_partition_backfills_metadata_columns():
+    with tempfile.TemporaryDirectory() as tmp:
+        part = Path(tmp) / "cpi" / "year=2024" / "data.parquet"
+        part.parent.mkdir(parents=True, exist_ok=True)
+        legacy = prepared().drop(columns=["source_unit", "source_frequency"])
+        legacy.to_parquet(part, index=False)
+        write_bronze(prepared(fetched_at="2026-08-21T11:00:00+00:00"), Path(tmp))
+        out = pd.read_parquet(part)
+        assert list(out.columns) == BRONZE_COLUMNS
+        assert set(out["source_unit"]) == {SOURCE_UNIT_DEFAULT}
+        assert set(out["source_frequency"]) == {SOURCE_FREQUENCY_DEFAULT}
+
+
+def test_existing_partition_missing_required_column_fails():
+    with tempfile.TemporaryDirectory() as tmp:
+        part = Path(tmp) / "cpi" / "year=2024" / "data.parquet"
+        part.parent.mkdir(parents=True, exist_ok=True)
+        broken = prepared().drop(columns=["fetched_at"])
+        broken.to_parquet(part, index=False)
+        try:
+            write_bronze(prepared(fetched_at="2026-08-21T11:00:00+00:00"), Path(tmp))
+        except ValidationError as e:
+            assert "missing columns" in str(e)
+        else:
+            raise AssertionError("expected ValidationError for broken existing partition")
 
 
 if __name__ == "__main__":

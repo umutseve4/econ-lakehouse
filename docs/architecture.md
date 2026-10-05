@@ -5,7 +5,7 @@
 ## Data flow
 
 1. **Source** — TCMB EVDS supplies the configured macroeconomic series.
-2. **Bronze** — the ingestion layer preserves raw observations and provenance.
+2. **Bronze** — the ingestion layer preserves raw observations plus source provenance (`source_name`, `fetched_at`, `source_unit`, `source_frequency`) in partitioned Parquet written through atomic local replacement.
 3. **Silver** — dbt cleans, types, validates, and standardizes the observations.
 4. **Gold** — dbt produces analytics-ready facts and marts.
 5. **Serving** — FastAPI exposes data while Streamlit presents the analytical dashboard.
